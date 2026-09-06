@@ -1,0 +1,23 @@
+# --- API / webhook ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7
+pydantic-settings>=2.3
+
+# --- RAG (LangChain + ChromaDB + embeddings locais) ---
+langchain-core>=0.3
+langchain-chroma>=0.2
+langchain-huggingface>=0.1
+sentence-transformers>=3.0
+chromadb>=0.5
+
+# --- LLM ---
+openai>=1.40
+
+# --- WhatsApp ---
+twilio>=9.0
+
+# --- Testes ---
+pytest>=8.0
+httpx>=0.27

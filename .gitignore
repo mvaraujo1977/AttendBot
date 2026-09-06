@@ -1,0 +1,47 @@
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Variáveis de ambiente e segredos
+.env
+*.env.local
+
+# Modelos baixados / cache do sentence-transformers e HuggingFace
+.cache/
+**/models--*/
+*.bin
+*.safetensors
+
+# Banco vetorial (Chroma persiste em disco por padrão)
+chroma_db/
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# IDEs / editores
+.vscode/
+.idea/
+*.swp
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Testes / cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Skill de convenções pessoais (não faz parte do projeto)
+*.skill
