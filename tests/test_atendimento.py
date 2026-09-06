@@ -2,7 +2,11 @@
 
 import pytest
 
-from app.atendimento import MENSAGEM_SEM_TEXTO, ServicoAtendimento
+from app.atendimento import (
+    MENSAGEM_BOAS_VINDAS,
+    MENSAGEM_SEM_TEXTO,
+    ServicoAtendimento,
+)
 from app.handoff import MotivoTransbordo
 from app.rag.generator import SINAL_TRANSBORDO, Generator
 from app.rag.retriever import Retriever
@@ -154,3 +158,71 @@ def test_mensagem_sem_texto_pede_a_duvida_por_escrito() -> None:
     assert resposta.texto == MENSAGEM_SEM_TEXTO
     assert resposta.transbordo is False
     assert llm.prompts == []
+
+
+# --- Comandos (respondidos sem passar pelo RAG) ------------------------------
+
+
+@pytest.mark.parametrize("comando", ["/start", "/help", "/ajuda", "/START", "/Help"])
+def test_comandos_respondem_boas_vindas_sem_consultar_o_rag(comando: str) -> None:
+    llm = LLMFalso("nao deveria ser chamado")
+    store = VectorStoreFalso([(_documento("Qual o frete?", "Grátis."), 0.10)])
+    servico = ServicoAtendimento(
+        retriever=Retriever(store, top_k=3),
+        generator=Generator(llm, nome_empresa="Loja Exemplo"),
+        limiar_similaridade=LIMIAR,
+        mensagem_transbordo=MENSAGEM_TRANSBORDO,
+    )
+
+    resposta = servico.responder(comando)
+
+    assert resposta.texto == MENSAGEM_BOAS_VINDAS
+    assert resposta.transbordo is False
+    # A prova de que o RAG foi curto-circuitado: nem busca nem LLM aconteceram.
+    assert store.chamadas == []
+    assert llm.prompts == []
+
+
+@pytest.mark.parametrize(
+    "mensagem",
+    [
+        "/start@attendbot_marcelo_bot",  # o Telegram sufixa o comando em grupos
+        "/start abc123",  # payload de link de convite
+        "  /help  ",
+    ],
+)
+def test_comando_e_reconhecido_com_sufixo_do_bot_ou_payload(mensagem: str) -> None:
+    servico = _criar_servico([], LLMFalso("x"))
+
+    assert servico.responder(mensagem).texto == MENSAGEM_BOAS_VINDAS
+
+
+def test_comando_desconhecido_segue_para_o_rag() -> None:
+    servico = _criar_servico([], LLMFalso("x"))
+
+    resposta = servico.responder("/qualquer_outra_coisa")
+
+    # Sem resultados na busca, cai no transbordo normal — não em boas-vindas.
+    assert resposta.texto == MENSAGEM_TRANSBORDO
+    assert resposta.motivo == MotivoTransbordo.SEM_RESULTADOS.value
+
+
+def test_mensagem_com_barra_no_meio_nao_e_comando() -> None:
+    llm = LLMFalso("Aceitamos Pix.")
+    servico = _criar_servico(
+        [(_documento("Formas de pagamento?", "Pix e cartão."), 0.10)], llm
+    )
+
+    assert servico.responder("aceita pix e/ou boleto?").texto == "Aceitamos Pix."
+
+
+def test_mensagem_de_boas_vindas_e_configuravel() -> None:
+    servico = ServicoAtendimento(
+        retriever=Retriever(VectorStoreFalso([]), top_k=3),
+        generator=Generator(LLMFalso("x"), nome_empresa="Loja Exemplo"),
+        limiar_similaridade=LIMIAR,
+        mensagem_transbordo=MENSAGEM_TRANSBORDO,
+        mensagem_boas_vindas="Oi! Sou o bot da Loja Exemplo.",
+    )
+
+    assert servico.responder("/start").texto == "Oi! Sou o bot da Loja Exemplo."

@@ -1,16 +1,22 @@
-"""Aplicação FastAPI: webhook do WhatsApp e endpoint de teste local."""
+"""Aplicação FastAPI: webhooks dos canais e endpoint de teste local.
+
+Há uma rota por canal porque o formato do webhook é diferente: o Twilio manda
+formulário e espera TwiML de volta; o Telegram manda JSON e espera 200. O que
+vem depois — RAG, transbordo, envio — é o mesmo para os dois.
+"""
 
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.atendimento import RespostaAtendimento, ServicoAtendimento
 from app.config import Configuracoes, obter_configuracoes
 from app.dependencias import criar_mensageria, criar_servico
-from app.whatsapp.base import ProvedorMensageria
+from app.whatsapp.base import MensagemRecebida, ProvedorMensageria
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +34,11 @@ async def lifespan(app: FastAPI):
     )
     config = obter_configuracoes()
     logger.info(
-        "Iniciando bot da %s (LLM=%s, limiar=%.2f, dry_run=%s)",
+        "Iniciando bot da %s (canal=%s, LLM=%s, limiar=%.2f)",
         config.nome_empresa,
+        config.canal,
         config.provedor_llm,
         config.limiar_similaridade,
-        config.twilio_dry_run,
     )
     app.state.config = config
     app.state.servico = criar_servico(config)
@@ -86,6 +92,22 @@ class RespostaResponse(BaseModel):
         )
 
 
+# --- Núcleo comum aos canais -------------------------------------------------
+
+
+async def _responder_e_enviar(
+    mensagem: MensagemRecebida,
+    servico: ServicoAtendimento,
+    mensageria: ProvedorMensageria,
+) -> None:
+    """Roda o RAG e devolve a resposta pelo mesmo canal que trouxe a mensagem."""
+    logger.info("Mensagem recebida de %s: %s", mensagem.remetente, mensagem.texto)
+
+    # Busca vetorial e chamada ao LLM são bloqueantes: fora do event loop.
+    resposta = await run_in_threadpool(servico.responder, mensagem.texto)
+    await run_in_threadpool(mensageria.enviar, mensagem.remetente, resposta.texto)
+
+
 # --- Rotas -------------------------------------------------------------------
 
 
@@ -119,13 +141,53 @@ async def webhook_whatsapp(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(erro)
         ) from erro
 
-    logger.info("Mensagem recebida de %s: %s", mensagem.remetente, mensagem.texto)
-
-    # Busca vetorial e chamada ao LLM são bloqueantes: fora do event loop.
-    resposta = await run_in_threadpool(servico.responder, mensagem.texto)
-    await run_in_threadpool(mensageria.enviar, mensagem.remetente, resposta.texto)
+    await _responder_e_enviar(mensagem, servico, mensageria)
 
     return Response(content=TWIML_VAZIO, media_type="application/xml")
+
+
+@app.post("/webhook/telegram", summary="Webhook de mensagens do Telegram")
+async def webhook_telegram(
+    request: Request,
+    servico: ServicoAtendimento = Depends(obter_servico),
+    mensageria: ProvedorMensageria = Depends(obter_mensageria),
+    config: Configuracoes = Depends(obter_config_app),
+) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except ValueError as erro:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Corpo não é JSON."
+        ) from erro
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Update inválido."
+        )
+
+    # Sem segredo configurado não há o que validar: o webhook fica aberto, o
+    # que só é aceitável em demonstração local (ver README).
+    if config.telegram_segredo_webhook:
+        if not mensageria.validar_requisicao(
+            str(request.url), payload, request.headers
+        ):
+            logger.warning("Webhook recusado: segredo inválido.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Segredo inválido."
+            )
+
+    try:
+        mensagem = mensageria.extrair_mensagem(payload)
+    except ValueError as erro:
+        # O Telegram reenvia o update em qualquer resposta != 2xx. Updates que
+        # não são mensagem (edição de canal, callback de botão) são normais:
+        # confirmamos o recebimento e descartamos.
+        logger.info("Update do Telegram ignorado: %s", erro)
+        return JSONResponse({"ok": True, "ignorado": True})
+
+    await _responder_e_enviar(mensagem, servico, mensageria)
+
+    return JSONResponse({"ok": True})
 
 
 @app.post(

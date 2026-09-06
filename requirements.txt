@@ -15,9 +15,10 @@ chromadb>=0.5
 # --- LLM ---
 openai>=1.40
 
-# --- WhatsApp ---
+# --- Canais de mensageria ---
 twilio>=9.0
+# httpx: chamadas à Bot API do Telegram (e usado pelo TestClient do FastAPI)
+httpx>=0.27
 
 # --- Testes ---
 pytest>=8.0
-httpx>=0.27

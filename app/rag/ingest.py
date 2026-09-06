@@ -27,12 +27,28 @@ class ItemFAQ:
     resposta: str
     categoria: str = "geral"
     tags: tuple[str, ...] = ()
+    # Outras formas de perguntar a mesma coisa: abreviações ("NF"), gíria e
+    # escrita sem acento. Cada uma vira um documento próprio apontando para a
+    # MESMA resposta — ver `indexar`. Tags não resolveriam isso: são metadado,
+    # não entram no embedding.
+    variacoes: tuple[str, ...] = ()
+
+    @staticmethod
+    def _hash(chave: str) -> str:
+        return hashlib.sha1(chave.strip().lower().encode("utf-8")).hexdigest()[:16]
 
     @property
     def id(self) -> str:
         """Id estável derivado da pergunta canônica (é o que permite o upsert)."""
-        chave = self.pergunta.strip().lower().encode("utf-8")
-        return hashlib.sha1(chave).hexdigest()[:16]
+        return self._hash(self.pergunta)
+
+    def id_da_variacao(self, variacao: str) -> str:
+        """Id estável da variação, derivado do par (pergunta, variação).
+
+        Amarrar à pergunta evita que a mesma variação escrita em duas entradas
+        colida no upsert e apague uma delas.
+        """
+        return self._hash(f"{self.pergunta}|{variacao}")
 
     def metadados(self) -> dict[str, str]:
         """Metadados do documento. O Chroma só aceita valores escalares."""
@@ -65,12 +81,18 @@ def carregar_faq(caminho: Path) -> list[ItemFAQ]:
         tags = tuple(
             str(tag).strip() for tag in (bruto.get("tags") or []) if str(tag).strip()
         )
+        variacoes = tuple(
+            str(variacao).strip()
+            for variacao in (bruto.get("variacoes") or [])
+            if str(variacao).strip()
+        )
         itens.append(
             ItemFAQ(
                 pergunta=pergunta,
                 resposta=resposta,
                 categoria=str(bruto.get("categoria") or "geral").strip(),
                 tags=tags,
+                variacoes=variacoes,
             )
         )
 
@@ -80,16 +102,30 @@ def carregar_faq(caminho: Path) -> list[ItemFAQ]:
 
 
 def indexar(itens: Sequence[ItemFAQ], vector_store) -> int:
-    """Grava (ou atualiza) os itens no vector store. Devolve quantos foram."""
-    if not itens:
+    """Grava (ou atualiza) os itens no vector store. Devolve quantos documentos.
+
+    Cada variação vira um documento com embedding próprio, mas carregando os
+    metadados da entrada canônica: quem casa com a busca é o texto da variação,
+    quem responde continua sendo a pergunta original.
+    """
+    textos: list[str] = []
+    metadados: list[dict[str, str]] = []
+    ids: list[str] = []
+
+    for item in itens:
+        textos.append(item.pergunta)
+        metadados.append(item.metadados())
+        ids.append(item.id)
+        for variacao in item.variacoes:
+            textos.append(variacao)
+            metadados.append(item.metadados())
+            ids.append(item.id_da_variacao(variacao))
+
+    if not textos:
         return 0
 
-    vector_store.add_texts(
-        texts=[item.pergunta for item in itens],
-        metadatas=[item.metadados() for item in itens],
-        ids=[item.id for item in itens],
-    )
-    return len(itens)
+    vector_store.add_texts(texts=textos, metadatas=metadados, ids=ids)
+    return len(textos)
 
 
 def executar_ingestao(config: Configuracoes, recriar: bool = False) -> int:
@@ -102,7 +138,13 @@ def executar_ingestao(config: Configuracoes, recriar: bool = False) -> int:
 
     itens = carregar_faq(config.caminho_faq)
     total = indexar(itens, criar_vector_store(config))
-    logger.info("%d perguntas indexadas na coleção %s.", total, config.colecao_chroma)
+    logger.info(
+        "%d documentos indexados na coleção %s (%d perguntas + %d variações).",
+        total,
+        config.colecao_chroma,
+        len(itens),
+        total - len(itens),
+    )
     return total
 
 
@@ -126,7 +168,7 @@ def main() -> None:
         config = config.model_copy(update={"caminho_faq": argumentos.faq})
 
     total = executar_ingestao(config, recriar=argumentos.recriar)
-    print(f"{total} perguntas indexadas em {config.diretorio_chroma}")
+    print(f"{total} documentos indexados em {config.diretorio_chroma}")
 
 
 if __name__ == "__main__":

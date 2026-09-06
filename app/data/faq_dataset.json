@@ -3,60 +3,138 @@
     "pergunta": "Qual o horário de atendimento?",
     "resposta": "Nosso atendimento humano funciona de segunda a sexta, das 9h às 18h, e aos sábados das 9h às 13h. O bot responde 24 horas por dia.",
     "categoria": "atendimento",
-    "tags": ["horario", "funcionamento", "atendimento"]
+    "tags": ["horario", "funcionamento", "atendimento"],
+    "variacoes": [
+      "qual o horario de atendimento",
+      "que horas vocês abrem?",
+      "até que horas vocês atendem",
+      "vocês atendem sábado?",
+      "horário de funcionamento",
+      "tem atendente agora?"
+    ]
   },
   {
     "pergunta": "Qual o prazo de entrega do pedido?",
     "resposta": "O prazo é de 3 a 7 dias úteis para as regiões Sul e Sudeste e de 7 a 12 dias úteis para as demais regiões, contados a partir da confirmação do pagamento.",
     "categoria": "entrega",
-    "tags": ["prazo", "entrega", "frete"]
+    "tags": ["prazo", "entrega", "frete"],
+    "variacoes": [
+      "quanto tempo demora pra chegar?",
+      "prazo de entrega",
+      "em quantos dias chega?",
+      "quando chega meu pedido?",
+      "demora quanto tempo a entrega",
+      "prazo de envio"
+    ]
   },
   {
     "pergunta": "Como faço para rastrear meu pedido?",
     "resposta": "Assim que o pedido é postado, enviamos o código de rastreio por e-mail e WhatsApp. Você também encontra o código em Minha Conta, na aba Meus Pedidos.",
     "categoria": "entrega",
-    "tags": ["rastreio", "codigo", "pedido"]
+    "tags": ["rastreio", "codigo", "pedido"],
+    "variacoes": [
+      "código de rastreio",
+      "cod de rastreio",
+      "como rastreio meu pedido?",
+      "onde está meu pedido?",
+      "cadê meu pedido?",
+      "tem rastreamento?"
+    ]
   },
   {
     "pergunta": "Quais formas de pagamento vocês aceitam?",
     "resposta": "Aceitamos Pix, boleto bancário e cartão de crédito em até 12x, com parcelas sem juros a partir de R$ 300 em compras.",
     "categoria": "pagamento",
-    "tags": ["pagamento", "pix", "cartao", "boleto", "parcelamento"]
+    "tags": ["pagamento", "pix", "cartao", "boleto", "parcelamento"],
+    "variacoes": [
+      "aceita pix?",
+      "posso pagar com pix?",
+      "aceitam cartão?",
+      "aceitam boleto?",
+      "formas de pagamento",
+      "dá pra parcelar?",
+      "parcela em quantas vezes?"
+    ]
   },
   {
     "pergunta": "Como solicitar a troca de um produto?",
     "resposta": "A troca pode ser solicitada em até 30 dias após o recebimento, com o produto sem uso e na embalagem original. É só pedir a troca em Minha Conta que enviamos uma etiqueta de postagem gratuita.",
     "categoria": "trocas",
-    "tags": ["troca", "devolucao", "etiqueta"]
+    "tags": ["troca", "devolucao", "etiqueta"],
+    "variacoes": [
+      "quero trocar o produto",
+      "como faço a troca?",
+      "posso trocar?",
+      "troca e devolução",
+      "qual o prazo pra trocar?",
+      "quero devolver o produto"
+    ]
   },
   {
     "pergunta": "Como faço para cancelar meu pedido?",
     "resposta": "Pedidos ainda não enviados podem ser cancelados na hora em Minha Conta, na aba Meus Pedidos. Se o pedido já saiu para entrega, basta recusar o recebimento que o estorno é feito automaticamente.",
     "categoria": "pedidos",
-    "tags": ["cancelamento", "pedido", "estorno"]
+    "tags": ["cancelamento", "pedido", "estorno"],
+    "variacoes": [
+      "quero cancelar o pedido",
+      "como cancelo minha compra?",
+      "dá pra cancelar?",
+      "cancelamento de pedido",
+      "cancela meu pedido por favor"
+    ]
   },
   {
     "pergunta": "Em quanto tempo recebo o reembolso?",
     "resposta": "O reembolso é processado em até 5 dias úteis após recebermos o produto de volta. No Pix o valor cai na mesma conta em até 2 dias úteis; no cartão, o estorno aparece na fatura seguinte.",
     "categoria": "pagamento",
-    "tags": ["reembolso", "estorno", "devolucao"]
+    "tags": ["reembolso", "estorno", "devolucao"],
+    "variacoes": [
+      "quando recebo meu dinheiro de volta?",
+      "prazo de reembolso",
+      "quanto tempo demora o estorno?",
+      "quando cai o estorno?",
+      "reembolso demora quanto"
+    ]
   },
   {
     "pergunta": "Qual o valor do frete?",
     "resposta": "O frete é grátis para compras acima de R$ 199. Abaixo desse valor, o custo é calculado por CEP e aparece no carrinho antes de você finalizar a compra.",
     "categoria": "entrega",
-    "tags": ["frete", "valor", "gratis", "cep"]
+    "tags": ["frete", "valor", "gratis", "cep"],
+    "variacoes": [
+      "quanto custa o frete?",
+      "o frete é grátis?",
+      "frete gratis",
+      "tem frete grátis?",
+      "valor do frete",
+      "qual o frete pro meu cep"
+    ]
   },
   {
     "pergunta": "Os produtos têm garantia?",
     "resposta": "Todos os produtos têm 12 meses de garantia contra defeitos de fabricação, contados a partir da data da nota fiscal. Basta enviar a nota e uma foto do problema que abrimos o chamado.",
     "categoria": "suporte",
-    "tags": ["garantia", "defeito", "nota fiscal"]
+    "tags": ["garantia", "defeito", "nota fiscal"],
+    "variacoes": [
+      "tem garantia?",
+      "quanto tempo de garantia?",
+      "garantia de quantos meses?",
+      "produto com defeito",
+      "veio com defeito, e agora?"
+    ]
   },
   {
     "pergunta": "Vocês emitem nota fiscal?",
     "resposta": "Sim, a nota fiscal eletrônica é emitida junto com o envio do pedido e vai para o e-mail cadastrado na compra. Ela também fica disponível para download em Minha Conta.",
     "categoria": "pedidos",
-    "tags": ["nota fiscal", "nfe", "documento"]
+    "tags": ["nota fiscal", "nfe", "documento"],
+    "variacoes": [
+      "tem NF?",
+      "vocês mandam NF?",
+      "emitem NF-e?",
+      "emitem nfe?",
+      "nota fiscal eletrônica",
+      "cadê minha nota fiscal?"
+    ]
   }
 ]

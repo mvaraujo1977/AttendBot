@@ -37,7 +37,29 @@ class Retriever:
         resultados = [
             self._converter(documento, distancia) for documento, distancia in brutos
         ]
-        return sorted(resultados, key=lambda item: item.similaridade, reverse=True)
+        ordenados = sorted(
+            resultados, key=lambda item: item.similaridade, reverse=True
+        )
+        return self._sem_duplicatas(ordenados)
+
+    @staticmethod
+    def _sem_duplicatas(resultados: list[ResultadoBusca]) -> list[ResultadoBusca]:
+        """Colapsa documentos que apontam para a mesma entrada de FAQ.
+
+        Uma pergunta e suas variações são vetores distintos com a mesma
+        resposta. Sem isto, uma abreviação gastaria duas das três vagas do
+        top_k repetindo a mesma entrada, empobrecendo o contexto que vai para o
+        LLM. Como a lista já chega ordenada, sobra a ocorrência de maior
+        similaridade.
+        """
+        vistas: set[str] = set()
+        unicos: list[ResultadoBusca] = []
+        for resultado in resultados:
+            if resultado.pergunta in vistas:
+                continue
+            vistas.add(resultado.pergunta)
+            unicos.append(resultado)
+        return unicos
 
     @staticmethod
     def _converter(documento, distancia: float) -> ResultadoBusca:

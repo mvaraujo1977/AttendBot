@@ -20,6 +20,19 @@ MENSAGEM_SEM_TEXTO = (
     "Pode me escrever sua dúvida?"
 )
 
+MENSAGEM_BOAS_VINDAS = (
+    "Olá! Sou o assistente virtual de atendimento. Respondo dúvidas sobre "
+    "pedidos, entrega, frete, pagamento, trocas, reembolso, garantia e nota "
+    "fiscal.\n\n"
+    "É só escrever sua pergunta com suas próprias palavras. Quando eu não "
+    "souber responder com segurança, encaminho você para um atendente humano."
+)
+
+# Comandos respondidos com texto fixo, sem passar pelo RAG. São convenção do
+# Telegram, mas ficam aqui — e não no provedor — porque a resposta é a mesma
+# em qualquer canal e nenhuma delas depende de transporte.
+COMANDOS_BOAS_VINDAS = frozenset({"/start", "/help", "/ajuda"})
+
 
 @dataclass(frozen=True)
 class RespostaAtendimento:
@@ -29,6 +42,18 @@ class RespostaAtendimento:
     transbordo: bool
     similaridade: float
     motivo: str | None = None
+
+
+def _comando(texto: str) -> str | None:
+    """Extrai o comando de uma mensagem, ou ``None`` se ela não for um.
+
+    O Telegram manda ``/start``, mas também ``/start@nome_do_bot`` em grupos
+    e ``/start <payload>`` em links de convite: só a primeira palavra, sem o
+    sufixo do bot, identifica o comando.
+    """
+    if not texto.startswith("/"):
+        return None
+    return texto.split(maxsplit=1)[0].split("@", 1)[0].lower()
 
 
 def _e_sinal_de_transbordo(texto: str) -> bool:
@@ -52,17 +77,30 @@ class ServicoAtendimento:
         generator: Generator,
         limiar_similaridade: float,
         mensagem_transbordo: str,
+        mensagem_boas_vindas: str | None = None,
     ) -> None:
         self._retriever = retriever
         self._generator = generator
         self._limiar = limiar_similaridade
         self._mensagem_transbordo = mensagem_transbordo
+        self._mensagem_boas_vindas = mensagem_boas_vindas or MENSAGEM_BOAS_VINDAS
 
     def responder(self, pergunta: str) -> RespostaAtendimento:
         pergunta = (pergunta or "").strip()
         if not pergunta:
             return RespostaAtendimento(
                 texto=MENSAGEM_SEM_TEXTO, transbordo=False, similaridade=0.0
+            )
+
+        # Antes da busca: '/start' não é pergunta de cliente, e mandá-lo para o
+        # RAG só produz transbordo (medido: similaridade 0.771) — um humano
+        # seria chamado para responder a um clique de abertura de conversa.
+        if _comando(pergunta) in COMANDOS_BOAS_VINDAS:
+            logger.info("Comando respondido sem RAG: %s", pergunta)
+            return RespostaAtendimento(
+                texto=self._mensagem_boas_vindas,
+                transbordo=False,
+                similaridade=0.0,
             )
 
         resultados = self._retriever.buscar(pergunta)

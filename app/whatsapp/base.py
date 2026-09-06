@@ -8,6 +8,7 @@ nova implementação aqui, sem tocar no RAG nem no webhook.
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,7 @@ class ProvedorMensageria(ABC):
     """Interface de entrada e saída de mensagens."""
 
     @abstractmethod
-    def extrair_mensagem(self, payload: Mapping[str, str]) -> MensagemRecebida:
+    def extrair_mensagem(self, payload: Mapping[str, Any]) -> MensagemRecebida:
         """Converte o payload bruto do webhook em uma ``MensagemRecebida``.
 
         Deve levantar ``ValueError`` se o payload não tiver os campos mínimos.
@@ -37,7 +38,7 @@ class ProvedorMensageria(ABC):
         """
 
     def validar_requisicao(
-        self, url: str, payload: Mapping[str, str], cabecalhos: Mapping[str, str]
+        self, url: str, payload: Mapping[str, Any], cabecalhos: Mapping[str, str]
     ) -> bool:
         """Valida a autenticidade do webhook. Por padrão, aceita tudo."""
         return True

@@ -1,9 +1,12 @@
 # AttendBot 🤖
 
-Bot de atendimento automatizado via WhatsApp com IA, usando **RAG
-(Retrieval-Augmented Generation)** para responder perguntas com base em uma
-FAQ, e transbordo automático para atendimento humano quando a IA não tem
+Bot de atendimento automatizado via **WhatsApp ou Telegram** com IA, usando
+**RAG (Retrieval-Augmented Generation)** para responder perguntas com base em
+uma FAQ, e transbordo automático para atendimento humano quando a IA não tem
 confiança suficiente na resposta.
+
+> **Para avaliar rodando:** use o Telegram (`CANAL=telegram`). O webhook do
+> WhatsApp exige conta Twilio paga — ver **Canais de mensageria** abaixo.
 
 Projeto de portfólio — arquitetura pensada para ser genérica o suficiente
 para se tornar a base de um produto real ou de uma entrega para cliente.
@@ -15,9 +18,11 @@ um único provedor de mensageria/LLM amarrado no código, e não sabem dizer
 "não sei" — inventam respostas (alucinam) em vez de encaminhar para um
 humano. O AttendBot resolve os dois:
 
-- **Arquitetura desacoplada**: trocar o canal (WhatsApp → Telegram, Twilio →
-  API oficial) ou o provedor de LLM (OpenAI → outro) é escrever uma classe
-  nova, não reescrever o sistema.
+- **Arquitetura desacoplada**: trocar o canal ou o provedor de LLM é escrever
+  uma classe nova, não reescrever o sistema. Isso deixou de ser promessa: o
+  Telegram entrou como segundo canal sem uma linha alterada no RAG, no
+  serviço de atendimento ou nos testes existentes — só uma implementação de
+  `ProvedorMensageria` e uma rota.
 - **Transbordo consciente**: a IA só responde quando a similaridade entre a
   pergunta do usuário e a base de conhecimento está acima de um limiar
   configurável. Abaixo disso — ou se o LLM falhar — a conversa é encaminhada
@@ -32,6 +37,8 @@ humano. O AttendBot resolve os dois:
 
 ```
 Mensagem recebida
+       │
+       ├── /start, /help, /ajuda ──► boas-vindas (texto fixo, sem RAG)
        │
        ▼
  Gera embedding da pergunta (multilingual-e5-large, local)
@@ -54,7 +61,7 @@ Mensagem recebida
        ├── falha na chamada ───────────► transbordo (erro_geracao)
        │
        ▼ Responde
- Resposta enviada pelo canal (WhatsApp via Twilio)
+ Resposta enviada pelo canal (Telegram ou WhatsApp via Twilio)
 ```
 
 ## Stack técnica
@@ -66,15 +73,16 @@ Mensagem recebida
 - **sentence-transformers** com `intfloat/multilingual-e5-large` — embeddings
   locais, sem custo de API (escolha medida na seção **Calibrando o transbordo**)
 - **OpenAI** — provedor de LLM padrão (trocável)
-- **Twilio** — provedor de mensageria padrão para WhatsApp (trocável)
-- **Pytest** — 47 testes unitários (rápidos, com dublês) e 23 de integração
+- **Twilio** (WhatsApp) e **Telegram Bot API** — dois canais sobre a mesma
+  interface, escolhidos por variável de ambiente
+- **Pytest** — 82 testes unitários (rápidos, com dublês) e 23 de integração
   (dataset e embeddings reais)
 
 ### Duas fronteiras trocáveis (o ponto arquitetural do projeto)
 
 | Interface | Implementação padrão | Trocar por |
 |---|---|---|
-| `ProvedorMensageria` (`whatsapp/base.py`) | Twilio | Qualquer canal — a lógica de negócio não sabe que WhatsApp existe |
+| `ProvedorMensageria` (`whatsapp/base.py`) | Twilio (WhatsApp) e Telegram | Qualquer canal — a lógica de negócio não sabe que WhatsApp existe |
 | `ProvedorLLM` (`llm/base.py`) | OpenAI | Qualquer LLM — nova classe + uma linha em `dependencias.py` |
 
 ## Rodando localmente
@@ -101,7 +109,8 @@ python -m app.rag.ingest
 
 ```bash
 # .env
-TWILIO_DRY_RUN=true
+CANAL=telegram
+TELEGRAM_DRY_RUN=true
 PROVEDOR_LLM=demo
 ```
 
@@ -109,8 +118,8 @@ PROVEDOR_LLM=demo
 python scripts/simular_conversa.py
 ```
 
-Isso conversa com o bot diretamente pelo terminal — sem precisar de conta
-Twilio ou chave de API.
+Isso conversa com o bot diretamente pelo terminal — sem precisar de conta em
+canal nenhum ou chave de API.
 
 ### 4. Testar via API
 
@@ -121,10 +130,124 @@ uvicorn app.main:app --reload
 `POST /api/mensagem` devolve, além da resposta, a **similaridade** e o
 **motivo** de eventual transbordo — use isso para calibrar o limiar.
 
+## Canais de mensageria
+
+Um canal é uma implementação de `ProvedorMensageria` (`app/whatsapp/base.py`)
+— três métodos: extrair a mensagem do payload, enviar a resposta, validar a
+autenticidade do webhook. Nada acima dessa interface sabe que WhatsApp ou
+Telegram existem.
+
+Foi o que a entrada do Telegram exercitou. O que precisou ser escrito:
+
+- `app/whatsapp/telegram_client.py` — a classe nova
+- um `if` em `criar_mensageria` (`app/dependencias.py`), o composition root
+- a rota `POST /webhook/telegram`
+
+O que **não** foi tocado: `ServicoAtendimento`, retriever, generator, prompt,
+calibração do transbordo e todos os testes que já existiam. É a diferença
+entre um canal acoplado e uma fronteira de verdade — e a razão de o bloqueio
+comercial da Twilio, descrito abaixo, ter custado uma tarde em vez de um
+reprojeto.
+
+O canal ativo é escolhido por `CANAL` no `.env`, do mesmo jeito que o LLM é
+escolhido por `PROVEDOR_LLM`. Existe uma rota por canal porque o formato do
+webhook é diferente — o Twilio manda formulário e espera TwiML de volta, o
+Telegram manda JSON e espera `200` — mas o que vem depois (RAG, transbordo,
+envio) é exatamente o mesmo código.
+
+| Canal | `CANAL` | Rota do webhook | Enviar | Receber (webhook) |
+|---|---|---|---|---|
+| **Telegram** | `telegram` | `POST /webhook/telegram` | grátis | grátis |
+| **WhatsApp (Twilio)** | `twilio` | `POST /webhook/whatsapp` | funciona no trial | **exige conta paga** |
+
+### Comandos
+
+`/start`, `/help` e `/ajuda` são respondidos com uma mensagem fixa de
+boas-vindas, sem passar pelo RAG. Não é economia de chamada: `/start` é o que o
+Telegram envia quando alguém abre a conversa pela primeira vez, e ele não é
+pergunta de cliente nenhuma — medido, pontuava 0.771 de similaridade e chamava
+um atendente humano para responder a um clique.
+
+O tratamento fica no `ServicoAtendimento`, não no `ProvedorTelegram`: a resposta
+é a mesma em qualquer canal e não depende de transporte. O parser aceita as
+formas que o Telegram usa na prática — `/start@nome_do_bot` em grupos e
+`/start <payload>` em links de convite. Comando desconhecido segue o fluxo
+normal e acaba em transbordo, que é o certo: quem inventou um comando quer
+falar com alguém.
+
+Personalize o texto com `MENSAGEM_BOAS_VINDAS` no `.env`.
+
+### Por que o WhatsApp não é demonstrável de graça
+
+No trial da Twilio dá para **enviar** mensagens de WhatsApp normalmente. O que
+o trial não libera é **registrar a URL do webhook** — que é justamente o que
+faz o bot *receber* a pergunta do cliente:
+
+- **Console novo**: *Messaging → WhatsApp → Try out WhatsApp → aba Inbound →
+  Auto-Reply: Custom*. O campo de webhook fica atrás do upgrade.
+- **Console legado**: *Sandbox settings → "When a message comes in"* redireciona
+  para a página de upgrade.
+
+Sem esse campo o Twilio nunca chama `/webhook/whatsapp`: o bot fica correto e
+inalcançável. Por isso a implementação Twilio segue no código, testada e pronta
+para uma conta paga — e o canal usado na demonstração é o Telegram, gratuito de
+ponta a ponta.
+
+### Ligando o Telegram (~5 minutos, sem cartão)
+
+**1. Criar o bot.** No Telegram, fale com o [@BotFather](https://t.me/BotFather),
+mande `/newbot` e guarde o token (formato `123456789:AA...`).
+
+**2. Configurar o `.env`:**
+
+```bash
+CANAL=telegram
+TELEGRAM_BOT_TOKEN=123456789:AA...
+TELEGRAM_DRY_RUN=false
+TELEGRAM_SEGREDO_WEBHOOK=um-segredo-qualquer
+```
+
+**3. Subir o app e um túnel HTTPS** (o Telegram só aceita webhook em HTTPS):
+
+```bash
+uvicorn app.main:app
+cloudflared tunnel --url http://localhost:8000    # em outro terminal
+```
+
+**4. Registrar o webhook** na URL que o túnel imprimiu:
+
+```bash
+curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://SEU-TUNEL.trycloudflare.com/webhook/telegram","secret_token":"um-segredo-qualquer"}'
+```
+
+O `secret_token` precisa ser idêntico ao `TELEGRAM_SEGREDO_WEBHOOK`: o Telegram
+o repete no cabeçalho `X-Telegram-Bot-Api-Secret-Token` de todo update, e o bot
+recusa com `403` quem não souber o segredo. Deixar `TELEGRAM_SEGREDO_WEBHOOK`
+vazio desliga a checagem — aceitável só em teste local.
+
+**5. Conferir e conversar.** `getWebhookInfo` mostra a URL registrada e o último
+erro de entrega, que é o primeiro lugar para olhar quando nada chega:
+
+```bash
+curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
+```
+
+Agora é só mandar uma mensagem para o bot no Telegram.
+
+> Túnel gratuito do `cloudflared` gera um hostname novo a cada reinício — depois
+> de reiniciar, rode o `setWebhook` de novo com a URL nova.
+
 ## Configuração
 
 | Variável | Descrição | Padrão |
 |---|---|---|
+| `CANAL` | `telegram` ou `twilio` | `twilio` |
+| `MENSAGEM_BOAS_VINDAS` | Resposta fixa de `/start` e `/help` | texto padrão |
+| `TELEGRAM_BOT_TOKEN` | Token do bot criado no @BotFather | — |
+| `TELEGRAM_DRY_RUN` | Se `true`, loga a mensagem em vez de enviar de verdade | `true` |
+| `TELEGRAM_SEGREDO_WEBHOOK` | Segredo do `setWebhook`; vazio desliga a checagem | — |
 | `TWILIO_DRY_RUN` | Se `true`, loga a mensagem em vez de enviar de verdade | `true` |
 | `PROVEDOR_LLM` | `openai` ou `demo` (responde sem API, para testes) | `openai` |
 | `LIMIAR_SIMILARIDADE` | Primeira barreira: similaridade mínima (0–1) | `0.80` |
@@ -184,17 +307,83 @@ acentuação), confira se o retrieval acerta a entrada certa e ajuste o limiar
 abaixo da faixa das corretas. Reindexe com `--recriar`, já que vetores de
 modelos diferentes não são comparáveis.
 
+### Variações e abreviações no FAQ
+
+Cliente não escreve como a FAQ está escrita. O primeiro teste pelo Telegram
+pegou o caso extremo:
+
+| Mensagem | Similaridade | Resultado |
+|---|---|---|
+| `tem nota fiscal` | 0.887 | responde |
+| `tem NF` | **0.799** | transbordo — perdeu por 0.001 |
+
+O embedding não sabe que "NF" é nota fiscal, e as `tags` não ajudam: elas são
+metadado, não entram no vetor. Havia duas saídas ruins e uma boa:
+
+- **Baixar o limiar** resolveria o `tem NF` e deixaria passar todo o resto que
+  está entre 0.77 e 0.80 — inclusive `/start`, que pontuava 0.771.
+- **Confiar na 2a barreira** custaria uma chamada de LLM para cada abreviação e,
+  pior, o contexto recuperado seria o errado.
+- **Enriquecer o índice**, que é o que foi feito: o problema não era o limiar
+  estar alto demais, era a base não conter a forma como as pessoas perguntam.
+
+Cada entrada do `faq_dataset.json` ganhou um campo `variacoes` — abreviações,
+gíria e escrita sem acento:
+
+```json
+{
+  "pergunta": "Vocês emitem nota fiscal?",
+  "resposta": "Sim, a nota fiscal eletrônica é emitida junto com o envio...",
+  "categoria": "pedidos",
+  "tags": ["nota fiscal", "nfe", "documento"],
+  "variacoes": ["tem NF?", "vocês mandam NF?", "emitem NF-e?", "cadê minha nota fiscal?"]
+}
+```
+
+Cada variação vira um **documento com embedding próprio**, carregando os
+metadados da entrada canônica: quem casa com a busca é o texto da variação,
+quem responde continua sendo a pergunta original. São 10 perguntas e 58
+variações — 68 documentos indexados.
+
+O efeito, medido depois da reindexação:
+
+| Mensagem | Antes | Depois |
+|---|---|---|
+| `tem NF` | 0.799 (transbordo) | **0.885** (responde) |
+| `tem NF?` | — | 0.929 |
+| `cod de rastreio` | — | 0.929 |
+| `qual o horario de atendimento` | — | 0.911 |
+
+E o controle, que é o que importa: perguntas fora da base **continuam
+transbordando**. `vocês vendem passagem aérea?` (0.861), `quanto é 2 + 2?`
+(0.832) e `tem vaga de emprego?` (0.857) passam da 1a barreira, como sempre
+passaram, e são barradas pela 2a com `contexto_insuficiente`. Enriquecer o
+índice aproximou as paráfrases legítimas sem aproximar o que não tem resposta.
+
+> Efeito colateral que precisou de tratamento: uma pergunta e suas variações são
+> vetores diferentes com a mesma resposta, então `tem NF` recuperava a mesma
+> entrada duas vezes e gastava duas das três vagas do `top_k`. O `Retriever`
+> agora colapsa resultados repetidos, mantendo a ocorrência de maior
+> similaridade — o LLM recebe três contextos distintos, como antes.
+
+Ao adicionar variações, **reindexe** (`python -m app.rag.ingest`). Não precisa
+de `--recriar`: os ids são estáveis e a carga faz upsert. Variações removidas do
+JSON, porém, ficam órfãs na base — aí sim vale um `--recriar`.
+
 ## Testes
 
 ```bash
-pytest                  # 47 testes unitários, ~1s, sem tocar em modelo ou API
+pytest                  # 82 testes unitários, ~1s, sem tocar em modelo ou API
 pytest -m integracao    # 23 testes com dataset e embeddings reais, ~25s
 ```
 
 Os unitários usam dublês nas fronteiras (vector store, LLM, canal) e cobrem a
 conversão de distância em similaridade, as quatro causas de transbordo, o
-reconhecimento do sinal do LLM, a validação e o upsert do dataset, e o webhook
-HTTP.
+reconhecimento do sinal do LLM, a validação e o upsert do dataset, e os dois
+webhooks HTTP — incluindo o parsing do update do Telegram, a checagem do
+segredo, o descarte de updates que não são mensagem, o curto-circuito dos
+comandos (provado pelo dublê: nem busca nem LLM são chamados) e a expansão das
+variações na ingestão.
 
 Os de integração indexam o `faq_dataset.json` de verdade e verificam que o
 retrieval recupera a entrada certa e que as faixas de similaridade continuam
@@ -206,7 +395,8 @@ precisam de `OPENAI_API_KEY` e são pulados sem ela.
 
 - Dashboard de métricas de uso (perguntas mais frequentes, taxa de
   transbordo)
-- Suporte à API oficial do WhatsApp Business (além do Twilio)
+- Suporte à API oficial do WhatsApp Business (além do Twilio) — hoje o
+  WhatsApp depende de conta Twilio paga para o webhook
 - Busca híbrida (vetorial + palavra-chave) para bases de FAQ maiores
 
 ---

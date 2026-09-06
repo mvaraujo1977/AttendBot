@@ -83,3 +83,24 @@ def test_buscar_usa_page_content_quando_falta_metadado() -> None:
 
     assert resultado.pergunta == "Pergunta sem metadados"
     assert resultado.tags == ()
+
+
+def test_buscar_colapsa_variacoes_da_mesma_entrada() -> None:
+    """Variações são documentos distintos apontando para a mesma entrada."""
+    canonica = _documento("Vocês emitem nota fiscal?")
+    store = VectorStoreFalso(
+        [
+            (canonica, 0.30),  # similaridade 0.70
+            (canonica, 0.10),  # a variação casou melhor: 0.90
+            (_documento("Qual o frete?"), 0.40),  # 0.60
+        ]
+    )
+
+    resultados = Retriever(store, top_k=3).buscar("tem NF?")
+
+    assert [r.pergunta for r in resultados] == [
+        "Vocês emitem nota fiscal?",
+        "Qual o frete?",
+    ]
+    # Sobra a ocorrência de maior similaridade, não a primeira que apareceu.
+    assert resultados[0].similaridade == pytest.approx(0.90)

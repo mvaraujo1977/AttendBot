@@ -47,14 +47,31 @@ def criar_servico(config: Configuracoes) -> ServicoAtendimento:
         generator=generator,
         limiar_similaridade=config.limiar_similaridade,
         mensagem_transbordo=config.mensagem_transbordo,
+        mensagem_boas_vindas=config.mensagem_boas_vindas,
     )
 
 
 def criar_mensageria(config: Configuracoes) -> ProvedorMensageria:
-    """Monta o canal de mensageria configurado."""
-    return ProvedorTwilio(
-        account_sid=config.twilio_account_sid,
-        auth_token=config.twilio_auth_token,
-        numero_origem=config.twilio_numero_origem,
-        dry_run=config.twilio_dry_run,
+    """Escolhe a implementação de canal conforme ``CANAL``."""
+    canal = config.canal.strip().lower()
+
+    if canal == "twilio":
+        return ProvedorTwilio(
+            account_sid=config.twilio_account_sid,
+            auth_token=config.twilio_auth_token,
+            numero_origem=config.twilio_numero_origem,
+            dry_run=config.twilio_dry_run,
+        )
+
+    if canal == "telegram":
+        from app.whatsapp.telegram_client import ProvedorTelegram
+
+        return ProvedorTelegram(
+            token=config.telegram_bot_token,
+            dry_run=config.telegram_dry_run,
+            segredo_webhook=config.telegram_segredo_webhook,
+        )
+
+    raise ValueError(
+        f"CANAL='{config.canal}' desconhecido. Use 'twilio' ou 'telegram'."
     )
