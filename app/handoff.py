@@ -17,6 +17,9 @@ class MotivoTransbordo(str, Enum):
 
     SEM_RESULTADOS = "sem_resultados"
     BAIXA_SIMILARIDADE = "baixa_similaridade"
+    # O contexto passou no limiar, mas o LLM avaliou que ele não responde
+    # à pergunta (segunda barreira). Ver app/rag/generator.py.
+    CONTEXTO_INSUFICIENTE = "contexto_insuficiente"
     ERRO_GERACAO = "erro_geracao"
 
 

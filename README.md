@@ -34,7 +34,7 @@ humano. O AttendBot resolve os dois:
 Mensagem recebida
        │
        ▼
- Gera embedding da pergunta (MiniLM multilíngue, local)
+ Gera embedding da pergunta (multilingual-e5-large, local)
        │
        ▼
  Busca no ChromaDB pelas perguntas mais similares da FAQ
@@ -42,15 +42,18 @@ Mensagem recebida
        ▼
  Calcula similaridade (0–1) a partir da distância de cosseno
        │
-       ├── Abaixo do limiar ──► Transbordo para humano (motivo registrado)
+       ├── 1a BARREIRA: abaixo do limiar ──► transbordo (baixa_similaridade)
        │
        ▼ Acima do limiar
  Monta prompt com o contexto recuperado
        │
        ▼
- LLM gera a resposta final (ou falha ──► transbordo por erro_geracao)
+ LLM lê o contexto e julga se ele responde à pergunta
        │
-       ▼
+       ├── 2a BARREIRA: não responde ──► transbordo (contexto_insuficiente)
+       ├── falha na chamada ───────────► transbordo (erro_geracao)
+       │
+       ▼ Responde
  Resposta enviada pelo canal (WhatsApp via Twilio)
 ```
 
@@ -60,13 +63,12 @@ Mensagem recebida
   não têm wheels para Python 3.14; use o `.venv` do projeto)
 - **FastAPI** — webhook e endpoint de mensagens
 - **ChromaDB** — banco vetorial
-- **sentence-transformers** com `paraphrase-multilingual-MiniLM-L12-v2` —
-  embeddings locais, sem custo de API (escolha justificada na seção
-  **Calibrando o limiar**)
+- **sentence-transformers** com `intfloat/multilingual-e5-large` — embeddings
+  locais, sem custo de API (escolha medida na seção **Calibrando o transbordo**)
 - **OpenAI** — provedor de LLM padrão (trocável)
 - **Twilio** — provedor de mensageria padrão para WhatsApp (trocável)
-- **Pytest** — 40 testes cobrindo o fluxo RAG, o transbordo e as duas
-  camadas de provedores
+- **Pytest** — 47 testes unitários (rápidos, com dublês) e 23 de integração
+  (dataset e embeddings reais)
 
 ### Duas fronteiras trocáveis (o ponto arquitetural do projeto)
 
@@ -87,7 +89,7 @@ pip install -r requirements.txt
 ```
 
 > ⚠️ A instalação completa baixa `torch`, e a primeira indexação baixa o
-> modelo de embedding (~470 MB).
+> modelo de embedding (~2,2 GB).
 
 ### 2. Indexar a base de FAQ
 
@@ -125,55 +127,80 @@ uvicorn app.main:app --reload
 |---|---|---|
 | `TWILIO_DRY_RUN` | Se `true`, loga a mensagem em vez de enviar de verdade | `true` |
 | `PROVEDOR_LLM` | `openai` ou `demo` (responde sem API, para testes) | `openai` |
-| `LIMIAR_SIMILARIDADE` | Limiar (0–1) abaixo do qual ocorre transbordo | `0.45` |
-| `MODELO_EMBEDDING` | Modelo local usado para gerar embeddings | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `LIMIAR_SIMILARIDADE` | Primeira barreira: similaridade mínima (0–1) | `0.80` |
+| `MODELO_EMBEDDING` | Modelo local usado para gerar embeddings | `intfloat/multilingual-e5-large` |
 
-### Calibrando o limiar
+### Calibrando o transbordo
 
-O limiar e o modelo de embedding **não são independentes** — e essa foi a
-decisão técnica mais interessante do projeto.
+Foi a parte mais interessante do projeto, e a que mais mudou de rumo com a
+medição.
 
-A escolha inicial foi o `intfloat/multilingual-e5-large`, que ranqueia melhor.
-Medindo 20 perguntas reais (10 cobertas pela FAQ, 10 completamente fora dela),
-o resultado foi:
+A ideia inicial era simples: um limiar de similaridade decide se o bot responde.
+Para escolher o modelo de embedding, medi 20 perguntas — 10 parafraseadas a
+partir da FAQ, 10 completamente fora dela:
 
-| Modelo | Perguntas da base | Perguntas fora da base | Existe limiar que separa? |
+| Modelo | Acerto do retrieval | Faixa das corretas | Faixa das de fora | Sobreposição |
+|---|---|---|---|---|
+| `multilingual-e5-large` | **10/10** | 0.839 – 0.891 | 0.735 – 0.845 | 0.006 |
+| `paraphrase-multilingual-MiniLM-L12-v2` | 6/10 | 0.390 – 0.839 | 0.039 – 0.524 | 0.134 |
+
+Duas conclusões, e a segunda só apareceu depois de um erro de método.
+
+**1. O e5 recupera muito melhor.** Acerta as 10; o MiniLM erra 4 — manda "o
+frete é grátis?" para a garantia e "posso pagar com pix?" para o reembolso.
+
+**2. Nenhum dos dois separa as faixas por limiar.** O e5 é treinado com
+negativos in-batch e temperatura, o que comprime todas as similaridades numa
+faixa alta e estreita: "quanto é 2 + 2?" pontua 0.832, praticamente o mesmo que
+a pergunta legítima mais fraca (0.839). Ele **ordena** muito bem, mas o valor
+absoluto quase não discrimina.
+
+> O erro de método vale registrar: na primeira medição escrevi as perguntas sem
+> acentuação, e o MiniLM pareceu separar as faixas com folga. Com acentuação —
+> que é como clientes de verdade escrevem — o resultado se inverte: "o frete é
+> grátis?" cai de 0.586 para 0.454 e passa a casar com a entrada errada. Uma
+> medição descuidada quase fixou o modelo pior no projeto.
+
+Daí o desenho atual, com **duas barreiras**:
+
+| | Barreira | Custo | Pega o quê |
 |---|---|---|---|
-| `multilingual-e5-large` | 0.828 – 0.895 | 0.735 – **0.828** | ❌ nenhum |
-| `MiniLM-L12-v2` | 0.337 – 0.839 | 0.039 – 0.364 | ✅ ~0.40 a 0.50 |
+| 1ª | Limiar de similaridade (`0.80`) | zero | O que nem chega perto da base |
+| 2ª | O LLM julga se o contexto responde | nenhuma chamada extra | Os casos de fronteira |
 
-O E5 é treinado com negativos in-batch e temperatura, o que comprime todas as
-similaridades numa faixa alta e estreita. Ele ordena os resultados muito bem,
-mas o **valor absoluto** não discrimina: com ele, "quanto é 2 + 2?" pontuava
-0.828 — exatamente o mesmo que a pergunta legítima mais fraca. Como a regra de
-transbordo depende justamente desse valor absoluto, o bot respondia qualquer
-coisa com a entrada mais próxima da FAQ, e o transbordo nunca disparava.
+A segunda barreira aproveita que o LLM **já está lendo o contexto** para
+responder: o prompt de sistema instrui que, se o contexto não responder à
+pergunta, ele devolva apenas `TRANSBORDO`. O `ServicoAtendimento` reconhece o
+sinal e encaminha para um humano. Não custa uma chamada a mais, e resolve
+justamente a faixa que a similaridade não consegue separar.
 
-Com o MiniLM, nas mesmas 20 perguntas:
+O limiar fica baixo de propósito: ele é um filtro barato, não o juiz. Quem
+decide "vocês vendem passagem aérea?" (0.845 de similaridade, mas sem resposta
+na FAQ) é a segunda barreira.
 
-```
-limiar 0.40 → 0 respostas indevidas, 2 transbordos desnecessários
-limiar 0.45 → 0 respostas indevidas, 2 transbordos desnecessários
-limiar 0.60 → 0 respostas indevidas, 5 transbordos desnecessários
-```
-
-O padrão é `0.45`. Os dois transbordos desnecessários são perguntas legítimas
-de borda que vão para um humano em vez de receberem resposta errada — o lado
-seguro do erro em atendimento.
-
-**Se trocar `MODELO_EMBEDDING`, recalibre o limiar**: mande ~20 perguntas em
-`POST /api/mensagem` (metade cobertas pela FAQ, metade não) e escolha o valor
-que separa os dois grupos. Reindexe com `--recriar` ao trocar de modelo, já
-que vetores de modelos diferentes não são comparáveis.
+**Se trocar `MODELO_EMBEDDING`, recalibre**: mande ~20 perguntas em
+`POST /api/mensagem` (metade cobertas pela FAQ, metade não, todas com
+acentuação), confira se o retrieval acerta a entrada certa e ajuste o limiar
+abaixo da faixa das corretas. Reindexe com `--recriar`, já que vetores de
+modelos diferentes não são comparáveis.
 
 ## Testes
 
 ```bash
-pytest
+pytest                  # 47 testes unitários, ~1s, sem tocar em modelo ou API
+pytest -m integracao    # 23 testes com dataset e embeddings reais, ~25s
 ```
 
-40 testes cobrindo o fluxo RAG ponta a ponta, a lógica de transbordo e as
-duas camadas de provedor (mensageria e LLM).
+Os unitários usam dublês nas fronteiras (vector store, LLM, canal) e cobrem a
+conversão de distância em similaridade, as quatro causas de transbordo, o
+reconhecimento do sinal do LLM, a validação e o upsert do dataset, e o webhook
+HTTP.
+
+Os de integração indexam o `faq_dataset.json` de verdade e verificam que o
+retrieval recupera a entrada certa e que as faixas de similaridade continuam
+onde a calibração assumiu — **é o teste que pegou o erro de calibração descrito
+acima**, e que nenhum teste com dublê pegaria. Os que exigem a segunda barreira
+precisam de `OPENAI_API_KEY` e são pulados sem ela.
 
 ## Roadmap / possíveis evoluções
 

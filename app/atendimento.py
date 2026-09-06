@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from app.handoff import MotivoTransbordo, avaliar_transbordo, filtrar_contexto
 from app.llm.base import ErroGeracao
-from app.rag.generator import Generator
+from app.rag.generator import SINAL_TRANSBORDO, Generator
 from app.rag.retriever import Retriever
 
 logger = logging.getLogger(__name__)
@@ -31,8 +31,20 @@ class RespostaAtendimento:
     motivo: str | None = None
 
 
+def _e_sinal_de_transbordo(texto: str) -> bool:
+    """O LLM pediu transbordo por julgar o contexto insuficiente?"""
+    return texto.strip().strip(".!\"'").upper() == SINAL_TRANSBORDO
+
+
 class ServicoAtendimento:
-    """Responde a uma pergunta de cliente aplicando o fluxo de RAG."""
+    """Responde a uma pergunta de cliente aplicando o fluxo de RAG.
+
+    O transbordo tem duas barreiras: o limiar de similaridade descarta o que
+    nem chega perto da base, e o LLM — que já está lendo o contexto — decide os
+    casos de fronteira, sinalizando quando o contexto não responde de fato à
+    pergunta. Uma barreira só não basta: a similaridade absoluta discrimina
+    mal, e sem o limiar toda mensagem viraria chamada de API.
+    """
 
     def __init__(
         self,
@@ -81,6 +93,20 @@ class ServicoAtendimento:
                 transbordo=True,
                 similaridade=decisao.similaridade,
                 motivo=MotivoTransbordo.ERRO_GERACAO.value,
+            )
+
+        if _e_sinal_de_transbordo(texto):
+            logger.info(
+                "Transbordo humano (motivo=%s, similaridade=%.3f): o LLM avaliou "
+                "que o contexto não responde à pergunta.",
+                MotivoTransbordo.CONTEXTO_INSUFICIENTE.value,
+                decisao.similaridade,
+            )
+            return RespostaAtendimento(
+                texto=self._mensagem_transbordo,
+                transbordo=True,
+                similaridade=decisao.similaridade,
+                motivo=MotivoTransbordo.CONTEXTO_INSUFICIENTE.value,
             )
 
         logger.info(

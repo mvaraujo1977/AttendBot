@@ -1,8 +1,10 @@
 """Testes do fluxo completo de atendimento (busca -> handoff -> geração)."""
 
+import pytest
+
 from app.atendimento import MENSAGEM_SEM_TEXTO, ServicoAtendimento
 from app.handoff import MotivoTransbordo
-from app.rag.generator import Generator
+from app.rag.generator import SINAL_TRANSBORDO, Generator
 from app.rag.retriever import Retriever
 from tests.conftest import DocumentoFalso, LLMFalso, LLMQuebrado, VectorStoreFalso
 
@@ -98,6 +100,49 @@ def test_contexto_fraco_nao_entra_no_prompt() -> None:
     _, prompt_usuario = llm.prompts[0]
     assert "De 3 a 7 dias úteis." in prompt_usuario
     assert "Em até 30 dias." not in prompt_usuario
+
+
+def test_transborda_quando_o_llm_julga_o_contexto_insuficiente() -> None:
+    """Segunda barreira: a similaridade passou, mas o LLM disse que não serve."""
+    servico = _criar_servico(
+        [(_documento("Qual o prazo de entrega?", "De 3 a 7 dias úteis."), 0.05)],
+        LLMFalso(SINAL_TRANSBORDO),
+    )
+
+    resposta = servico.responder("vocês vendem passagem aérea?")
+
+    assert resposta.transbordo is True
+    assert resposta.texto == MENSAGEM_TRANSBORDO
+    assert resposta.motivo == MotivoTransbordo.CONTEXTO_INSUFICIENTE.value
+
+
+@pytest.mark.parametrize(
+    "resposta_do_llm",
+    [SINAL_TRANSBORDO, " transbordo ", "TRANSBORDO.", '"Transbordo"', "transbordo!"],
+)
+def test_sinal_de_transbordo_e_reconhecido_apesar_de_variacoes(
+    resposta_do_llm: str,
+) -> None:
+    """O modelo nem sempre devolve o sinal exatamente como pedido."""
+    servico = _criar_servico(
+        [(_documento("Qual o frete?", "Grátis acima de R$ 199."), 0.05)],
+        LLMFalso(resposta_do_llm),
+    )
+
+    assert servico.responder("qualquer pergunta").transbordo is True
+
+
+def test_resposta_normal_que_menciona_transbordo_nao_e_confundida() -> None:
+    """Só o sinal isolado conta — texto que contém a palavra é resposta comum."""
+    texto = "Vou transbordo? Não: seu pedido chega em até 7 dias úteis."
+    servico = _criar_servico(
+        [(_documento("Qual o prazo?", "De 3 a 7 dias."), 0.05)], LLMFalso(texto)
+    )
+
+    resposta = servico.responder("quando chega?")
+
+    assert resposta.transbordo is False
+    assert resposta.texto == texto
 
 
 def test_mensagem_sem_texto_pede_a_duvida_por_escrito() -> None:
