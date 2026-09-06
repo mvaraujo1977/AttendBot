@@ -34,7 +34,7 @@ humano. O AttendBot resolve os dois:
 Mensagem recebida
        │
        ▼
- Gera embedding da pergunta (multilingual-e5-large, local)
+ Gera embedding da pergunta (MiniLM multilíngue, local)
        │
        ▼
  Busca no ChromaDB pelas perguntas mais similares da FAQ
@@ -60,8 +60,9 @@ Mensagem recebida
   não têm wheels para Python 3.14; use o `.venv` do projeto)
 - **FastAPI** — webhook e endpoint de mensagens
 - **ChromaDB** — banco vetorial
-- **sentence-transformers** com `intfloat/multilingual-e5-large` — embeddings
-  locais, sem custo de API, com boa cobertura de português
+- **sentence-transformers** com `paraphrase-multilingual-MiniLM-L12-v2` —
+  embeddings locais, sem custo de API (escolha justificada na seção
+  **Calibrando o limiar**)
 - **OpenAI** — provedor de LLM padrão (trocável)
 - **Twilio** — provedor de mensageria padrão para WhatsApp (trocável)
 - **Pytest** — 40 testes cobrindo o fluxo RAG, o transbordo e as duas
@@ -85,9 +86,8 @@ python3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
-> ⚠️ A instalação completa baixa `torch` e o modelo de embedding
-> (~2,2 GB no primeiro uso). Para uma alternativa mais leve, veja a seção
-> **Configuração** abaixo.
+> ⚠️ A instalação completa baixa `torch`, e a primeira indexação baixa o
+> modelo de embedding (~470 MB).
 
 ### 2. Indexar a base de FAQ
 
@@ -125,12 +125,46 @@ uvicorn app.main:app --reload
 |---|---|---|
 | `TWILIO_DRY_RUN` | Se `true`, loga a mensagem em vez de enviar de verdade | `true` |
 | `PROVEDOR_LLM` | `openai` ou `demo` (responde sem API, para testes) | `openai` |
-| `LIMIAR_SIMILARIDADE` | Limiar (0–1) abaixo do qual ocorre transbordo | `0.60` |
-| `MODELO_EMBEDDING` | Modelo local usado para gerar embeddings | `intfloat/multilingual-e5-large` |
+| `LIMIAR_SIMILARIDADE` | Limiar (0–1) abaixo do qual ocorre transbordo | `0.45` |
+| `MODELO_EMBEDDING` | Modelo local usado para gerar embeddings | `paraphrase-multilingual-MiniLM-L12-v2` |
 
-Para reduzir o download inicial, é possível trocar o modelo de embedding por
-um mais leve (ex. MiniLM multilíngue, ~470 MB) alterando `MODELO_EMBEDDING` —
-ver comentário em `rag/embeddings.py`.
+### Calibrando o limiar
+
+O limiar e o modelo de embedding **não são independentes** — e essa foi a
+decisão técnica mais interessante do projeto.
+
+A escolha inicial foi o `intfloat/multilingual-e5-large`, que ranqueia melhor.
+Medindo 20 perguntas reais (10 cobertas pela FAQ, 10 completamente fora dela),
+o resultado foi:
+
+| Modelo | Perguntas da base | Perguntas fora da base | Existe limiar que separa? |
+|---|---|---|---|
+| `multilingual-e5-large` | 0.828 – 0.895 | 0.735 – **0.828** | ❌ nenhum |
+| `MiniLM-L12-v2` | 0.337 – 0.839 | 0.039 – 0.364 | ✅ ~0.40 a 0.50 |
+
+O E5 é treinado com negativos in-batch e temperatura, o que comprime todas as
+similaridades numa faixa alta e estreita. Ele ordena os resultados muito bem,
+mas o **valor absoluto** não discrimina: com ele, "quanto é 2 + 2?" pontuava
+0.828 — exatamente o mesmo que a pergunta legítima mais fraca. Como a regra de
+transbordo depende justamente desse valor absoluto, o bot respondia qualquer
+coisa com a entrada mais próxima da FAQ, e o transbordo nunca disparava.
+
+Com o MiniLM, nas mesmas 20 perguntas:
+
+```
+limiar 0.40 → 0 respostas indevidas, 2 transbordos desnecessários
+limiar 0.45 → 0 respostas indevidas, 2 transbordos desnecessários
+limiar 0.60 → 0 respostas indevidas, 5 transbordos desnecessários
+```
+
+O padrão é `0.45`. Os dois transbordos desnecessários são perguntas legítimas
+de borda que vão para um humano em vez de receberem resposta errada — o lado
+seguro do erro em atendimento.
+
+**Se trocar `MODELO_EMBEDDING`, recalibre o limiar**: mande ~20 perguntas em
+`POST /api/mensagem` (metade cobertas pela FAQ, metade não) e escolha o valor
+que separa os dois grupos. Reindexe com `--recriar` ao trocar de modelo, já
+que vetores de modelos diferentes não são comparáveis.
 
 ## Testes
 
