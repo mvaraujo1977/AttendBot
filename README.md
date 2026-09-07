@@ -15,8 +15,8 @@ emprego?"*) para ver o transbordo acontecer.
 Roda em <https://attendbot-tt2r.onrender.com> — plano Free do Render, com
 embedding e LLM no tier gratuito do Gemini. Da URL, só o `/health` responde
 publicamente: o webhook exige o segredo do Telegram, e a documentação
-interativa e o endpoint de teste ficam desligados em produção
-(`EXPOR_FERRAMENTAS_DE_TESTE`).
+interativa e o endpoint de teste ficam desligados em produção (ver
+**Segurança**).
 
 > **Primeira mensagem pode demorar ~50s.** O plano Free hiberna após 15 min sem
 > tráfego, e o Telegram reentrega o update enquanto a instância sobe. Da segunda
@@ -494,6 +494,57 @@ toda a cota — não sobra para um segundo serviço gratuito no mesmo workspace.
 Para uma demonstração de portfólio, aceitar a hibernação e avisar que a
 primeira mensagem demora ~1 minuto é a escolha mais honesta. Para um cliente
 real, o plano pago do Render resolve, e o resto do projeto não muda.
+
+## Segurança
+
+Expor uma URL pública muda o modelo de ameaça: até aqui o único cliente era
+quem rodava o projeto. Antes do deploy o código passou por uma revisão, e o que
+segue é o resultado dela — não uma lista de boas intenções.
+
+**Corrigido antes de expor.** Duas falhas eram a mesma coisa vista de ângulos
+diferentes: a autenticação do webhook era condicional à própria configuração,
+então ela podia simplesmente não acontecer.
+
+- As duas rotas de webhook existiam sempre, mas cada uma validava com o guard
+  do *seu* canal enquanto todas usavam o provedor do canal *ativo*. Rodando como
+  Twilio, um POST na rota do Telegram não encontrava segredo para conferir e
+  caía no extrator do Twilio: a assinatura virava opcional para quem trocasse de
+  rota. Hoje a rota do canal inativo responde 404.
+- Segredo vazio pulava o bloco de validação inteiro — sem erro, sem aviso, um
+  deploy aberto indistinguível de um correto. Hoje a app **recusa subir** se o
+  canal envia de verdade sem autenticar quem chama.
+- O `/api/mensagem` e a documentação interativa ficaram atrás de
+  `EXPOR_FERRAMENTAS_DE_TESTE` (default `false`): o primeiro roda o RAG sem
+  passar por assinatura, segredo ou deduplicação, e o `/openapi.json` publicava
+  o mapa das rotas.
+- Cada mensagem custa duas chamadas de API e não havia teto nenhum. Hoje há
+  limite por remetente e corte da pergunta antes dela virar embedding e prompt.
+- O log guardava o remetente e o texto integral de cada mensagem. O remetente é
+  dado pessoal (no Twilio, o telefone), e num bot de atendimento o texto carrega
+  CPF e endereço. Hoje o log tem um pseudônimo estável e o tamanho.
+
+**Verificado, não presumido.** Os segredos nunca entraram no Git — nem no
+histórico, checado commit a commit. O container roda como usuário sem
+privilégios e não leva testes, scripts nem `.env` para a imagem. A chave do
+Gemini viaja em cabeçalho, não na URL, então não vaza em log de erro. Nenhuma
+exceção chega ao usuário final: falha de LLM vira transbordo.
+
+**Limitações conhecidas, e por que são aceitáveis aqui.**
+
+- *Prompt injection continua possível.* As mitigações reduzem a taxa, não
+  eliminam a classe. O que limita o dano é o escopo: a FAQ é somente leitura, o
+  bot não tem ferramenta nenhuma e não acessa dado de cliente. O pior caso é uma
+  resposta errada numa conversa, não uma ação no sistema.
+- *O teto por remetente vive na memória do processo.* Não sobrevive a restart
+  nem escala horizontalmente. É a mesma decisão da deduplicação de updates: o
+  alvo é conter abuso numa instância única, e um Redis não se justifica num
+  serviço que não tem nem disco.
+- *O `chromadb` tem CVEs abertas sem correção publicada.* Todas estão no
+  servidor HTTP do Chroma — RCE via `trust_remote_code` e falhas de autorização
+  entre tenants. Aqui ele roda embarcado, sem servidor e sem tenants: a
+  superfície vulnerável não existe neste deploy. Acompanhado, não ignorado.
+- *Não há autenticação de usuário final.* O canal já autentica, e o bot não
+  distingue clientes nem guarda estado por conversa.
 
 ## Configuração
 
