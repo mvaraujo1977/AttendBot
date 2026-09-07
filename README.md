@@ -5,8 +5,25 @@ Bot de atendimento automatizado via **WhatsApp ou Telegram** com IA, usando
 uma FAQ, e transbordo automático para atendimento humano quando a IA não tem
 confiança suficiente na resposta.
 
-> **Para avaliar rodando:** use o Telegram (`CANAL=telegram`). O webhook do
-> WhatsApp exige conta Twilio paga — ver **Canais de mensageria** abaixo.
+## Demonstração ao vivo
+
+**[@attendbot_marcelo_bot](https://t.me/attendbot_marcelo_bot)** — mande um
+`/start` e pergunte sobre prazo de entrega, frete, troca, reembolso, garantia
+ou nota fiscal. Pergunte também algo que a FAQ não cobre (*"vocês têm vaga de
+emprego?"*) para ver o transbordo acontecer.
+
+Roda em <https://attendbot-tt2r.onrender.com> — plano Free do Render, com
+embedding e LLM no tier gratuito do Gemini. Da URL, só o `/health` responde
+publicamente: o webhook exige o segredo do Telegram, e a documentação
+interativa e o endpoint de teste ficam desligados em produção
+(`EXPOR_FERRAMENTAS_DE_TESTE`).
+
+> **Primeira mensagem pode demorar ~50s.** O plano Free hiberna após 15 min sem
+> tráfego, e o Telegram reentrega o update enquanto a instância sobe. Da segunda
+> em diante é imediato — ver **Hibernação: a limitação que fica**.
+
+Para rodar você mesmo, o Telegram é o caminho (`CANAL=telegram`): o webhook do
+WhatsApp exige conta Twilio paga — ver **Canais de mensageria**.
 
 Projeto de portfólio — arquitetura pensada para ser genérica o suficiente
 para se tornar a base de um produto real ou de uma entrega para cliente.
@@ -340,7 +357,21 @@ esperá-los versionados.
 
 Depois do primeiro deploy, registre o webhook na URL que o Render deu
 (`https://<seu-servico>.onrender.com/webhook/telegram`) com o mesmo
-`setWebhook` da seção anterior.
+`setWebhook` da seção anterior. **O path importa:** só o host, sem
+`/webhook/telegram`, registra e o Telegram passa a entregar em 404.
+
+Esta instância roda em `https://attendbot-tt2r.onrender.com`. Confira o que
+ficou registrado com `getWebhookInfo` — ele mostra a URL e o último erro de
+entrega, que é o primeiro lugar para olhar quando nada chega:
+
+```bash
+curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
+```
+
+`last_error_message` vazio é o sinal de que está tudo certo. Um `403` ali
+significa que o `secret_token` registrado não bate com o
+`TELEGRAM_SEGREDO_WEBHOOK` do serviço — o caso típico depois de rotacionar o
+segredo em um lado só.
 
 ### Verificado localmente antes de subir
 
