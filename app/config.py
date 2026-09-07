@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import BeforeValidator
+from pydantic import BeforeValidator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -98,6 +98,17 @@ class Configuracoes(BaseSettings):
     # primeira vez. Ver `garantir_indice` em app/rag/ingest.py.
     reindexar_no_startup: bool = True
 
+    # Liga o que existe para desenvolver e não tem função em produção: o
+    # `/api/mensagem` e a documentação interativa (`/docs`, `/redoc`,
+    # `/openapi.json`).
+    #
+    # Default `false` porque as duas coisas são caras quando a URL é pública. O
+    # `/api/mensagem` roda o RAG inteiro sem passar por assinatura, segredo de
+    # webhook ou deduplicação — é o caminho mais barato para alguém queimar a
+    # cota do Gemini —, e o `/openapi.json` entrega o mapa das rotas de graça,
+    # incluindo o schema dele.
+    expor_ferramentas_de_teste: bool = False
+
     # --- Canal de mensageria -------------------------------------------------
     # "twilio" = WhatsApp (exige conta paga para configurar o webhook)
     # "telegram" = canal gratuito, usado na demonstração. Ver README.
@@ -121,6 +132,53 @@ class Configuracoes(BaseSettings):
     telegram_dry_run: bool = True
     # Segredo combinado no setWebhook. Vazio desliga a validação do webhook.
     telegram_segredo_webhook: str | None = None
+
+    @model_validator(mode="after")
+    def _exigir_autenticacao_de_webhook(self) -> "Configuracoes":
+        """Recusa a subida de um canal que envia de verdade sem autenticar quem chama.
+
+        As duas checagens de webhook são condicionais à própria configuração
+        (ver as rotas em app/main.py): com o segredo vazio ou a assinatura
+        desligada, o bloco de validação é *pulado* — não há requisição inválida
+        para registrar, então nem o aviso do provedor chega ao log. Um deploy
+        com o webhook aberto fica indistinguível de um deploy correto.
+
+        Por isso a checagem mora aqui e derruba a subida: no Render os segredos
+        entram no dashboard (`sync: false` no render.yaml), e deixar um campo em
+        branco é um clique. Falhar o healthcheck com o motivo no log é melhor
+        que servir para a internet inteira — o bot fora do ar é um incidente
+        visível, o bot aberto não é.
+
+        Só vale quando o canal envia de verdade: em dry-run nada sai, e exigir
+        segredo ali só atrapalharia quem está rodando o projeto localmente.
+        """
+        canal = self.canal.strip().lower()
+
+        if (
+            canal == "telegram"
+            and not self.telegram_dry_run
+            and not self.telegram_segredo_webhook
+        ):
+            raise ValueError(
+                "TELEGRAM_SEGREDO_WEBHOOK é obrigatório quando "
+                "TELEGRAM_DRY_RUN=false: sem ele o webhook aceita qualquer "
+                "POST. Gere um segredo, use o mesmo valor no `setWebhook` do "
+                "Telegram e defina a variável."
+            )
+
+        if (
+            canal == "twilio"
+            and not self.twilio_dry_run
+            and not self.twilio_validar_assinatura
+        ):
+            raise ValueError(
+                "TWILIO_VALIDAR_ASSINATURA=true é obrigatório quando "
+                "TWILIO_DRY_RUN=false: sem isso o webhook aceita qualquer POST. "
+                "Defina também URL_PUBLICA com exatamente a URL configurada no "
+                "console do Twilio — a assinatura é calculada sobre ela."
+            )
+
+        return self
 
 
 @lru_cache

@@ -43,6 +43,10 @@ services:
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      # Deixe em branco só em teste: vazio desliga a checagem do webhook.
+      # OBRIGATÓRIO: com TELEGRAM_DRY_RUN=false a app recusa subir sem ele, e
+      # o healthcheck falha com o motivo no log. É de propósito — deixar este
+      # campo em branco no dashboard é um clique, e antes disso o deploy subia
+      # limpo servindo um webhook que aceitava POST de qualquer origem.
+      # Use o mesmo valor no `secret_token` do setWebhook.
       - key: TELEGRAM_SEGREDO_WEBHOOK
         sync: false

@@ -9,8 +9,29 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from app.config import Configuracoes
 from app.llm.base import ErroGeracao, ProvedorLLM
 from app.rag.retriever import ResultadoBusca
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _config_sem_env():
+    """Isola ``Configuracoes`` do ``.env`` do desenvolvedor, para a suíte toda.
+
+    Sem isto, todo ``Configuracoes()`` de teste herda a máquina de quem roda:
+    quem tem ``CANAL=telegram`` no ``.env`` testa as rotas com um canal, e o CI
+    com outro. Um teste que passa por causa de um arquivo não versionado não
+    prova nada — e o guard de canal (``_exigir_canal``) e o validador de
+    autenticação de webhook são exatamente o tipo de regra que essa herança
+    mascara, porque os dois dependem de ``CANAL`` e dos ``*_DRY_RUN``.
+
+    Os testes que precisam de um valor continuam passando por parâmetro; o que
+    some é só a leitura implícita do arquivo.
+    """
+    anterior = Configuracoes.model_config.get("env_file")
+    Configuracoes.model_config["env_file"] = None
+    yield
+    Configuracoes.model_config["env_file"] = anterior
 
 
 @dataclass

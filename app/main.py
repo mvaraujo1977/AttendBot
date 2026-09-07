@@ -116,11 +116,20 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# A documentação interativa é decidida na construção da app, antes do lifespan,
+# então ela lê a configuração aqui em vez de receber por dependência. Ligá-la
+# publica o mapa das rotas — inclusive o `/api/mensagem` e o schema do corpo
+# dele —, o que só faz sentido em desenvolvimento.
+_ferramentas_de_teste = obter_configuracoes().expor_ferramentas_de_teste
+
 app = FastAPI(
     title="AttendBot",
     description="Bot de atendimento no WhatsApp com RAG (busca vetorial + LLM).",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if _ferramentas_de_teste else None,
+    redoc_url="/redoc" if _ferramentas_de_teste else None,
+    openapi_url="/openapi.json" if _ferramentas_de_teste else None,
 )
 
 
@@ -173,6 +182,25 @@ class RespostaResponse(BaseModel):
 
 
 # --- Núcleo comum aos canais -------------------------------------------------
+
+
+def _exigir_canal(config: Configuracoes, esperado: str) -> None:
+    """Recusa a rota do canal que não é o desta instância.
+
+    As duas rotas de webhook existem sempre, mas cada uma valida com o guard do
+    *seu* canal (assinatura do Twilio, segredo do Telegram) enquanto todas
+    chamam o mesmo ``mensageria`` — o do canal configurado. Isso separa o guard
+    do extrator: rodando com ``CANAL=twilio``, um POST em ``/webhook/telegram``
+    não encontra segredo nenhum para conferir, cai no extrator do Twilio (que
+    só quer ``From`` e ``Body``) e dispara um envio real. A assinatura vira
+    opcional para quem trocar de rota.
+
+    Fechar a rota do canal inativo é o que amarra as duas pontas: cada webhook
+    passa a ser alcançável só na configuração em que o seu próprio guard vale.
+    404 e não 403 porque, neste deploy, a rota realmente não existe.
+    """
+    if config.canal.strip().lower() != esperado:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
 
 def _processar(
@@ -239,6 +267,8 @@ async def webhook_whatsapp(
     config: Configuracoes = Depends(obter_config_app),
     updates: RegistroDeUpdates = Depends(obter_updates),
 ) -> Response:
+    _exigir_canal(config, "twilio")
+
     formulario = await request.form()
     payload = {chave: str(valor) for chave, valor in formulario.items()}
 
@@ -271,6 +301,8 @@ async def webhook_telegram(
     config: Configuracoes = Depends(obter_config_app),
     updates: RegistroDeUpdates = Depends(obter_updates),
 ) -> JSONResponse:
+    _exigir_canal(config, "telegram")
+
     try:
         payload = await request.json()
     except ValueError as erro:
@@ -316,6 +348,17 @@ async def webhook_telegram(
 async def api_mensagem(
     corpo: PerguntaRequest,
     servico: ServicoAtendimento = Depends(obter_servico),
+    config: Configuracoes = Depends(obter_config_app),
 ) -> RespostaResponse:
+    """Atalho de desenvolvimento: o RAG sem o canal no caminho.
+
+    Desligado por padrão (``EXPOR_FERRAMENTAS_DE_TESTE``). Ele não passa por
+    assinatura, segredo de webhook nem deduplicação de updates, então numa URL
+    pública seria o jeito mais direto de esgotar a cota do LLM — e ainda
+    devolve similaridade e motivo, que são diagnóstico interno.
+    """
+    if not config.expor_ferramentas_de_teste:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
     resposta = await run_in_threadpool(servico.responder, corpo.pergunta)
     return RespostaResponse.de_atendimento(resposta)

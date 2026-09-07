@@ -84,7 +84,7 @@ Mensagem recebida
 - **Twilio** (WhatsApp) e **Telegram Bot API** — dois canais sobre a mesma
   interface, escolhidos por variável de ambiente
 - **Docker + Render** — deploy no plano Free, sem custo recorrente
-- **Pytest** — 133 testes unitários (rápidos, com dublês) e 38 de integração
+- **Pytest** — 146 testes unitários (rápidos, com dublês) e 38 de integração
   (dataset e embeddings reais)
 
 ### Três fronteiras trocáveis (o ponto arquitetural do projeto)
@@ -195,7 +195,13 @@ uvicorn app.main:app --reload
 ```
 
 `POST /api/mensagem` devolve, além da resposta, a **similaridade** e o
-**motivo** de eventual transbordo — use isso para calibrar o limiar.
+**motivo** de eventual transbordo — use isso para calibrar o limiar. Ele exige
+`EXPOR_FERRAMENTAS_DE_TESTE=true` (como no `.env.example`), que também liga a
+documentação interativa em `/docs`; sem a variável, os dois respondem 404.
+
+O default é ficar desligado porque este endpoint roda o RAG inteiro **sem**
+passar por assinatura, segredo de webhook ou deduplicação de updates: numa URL
+pública, é o jeito mais direto de esgotar a cota do LLM.
 
 ## Canais de mensageria
 
@@ -350,7 +356,17 @@ serviço à mão, sem o Blueprint.
 | `NOME_EMPRESA` | o seu | Aparece no prompt de sistema |
 | `GEMINI_API_KEY` | 🔒 segredo | Serve para o embedding **e** para o LLM |
 | `TELEGRAM_BOT_TOKEN` | 🔒 segredo | Token do @BotFather |
-| `TELEGRAM_SEGREDO_WEBHOOK` | 🔒 segredo | Conferido em todo update; vazio abre o webhook |
+| `TELEGRAM_SEGREDO_WEBHOOK` | 🔒 segredo | Conferido em todo update; **obrigatório** fora de dry-run |
+
+`EXPOR_FERRAMENTAS_DE_TESTE` fica **fora** desta lista de propósito: o default
+já é `false`, e é o valor certo em produção.
+
+Com `TELEGRAM_DRY_RUN=false`, a app **recusa subir** sem
+`TELEGRAM_SEGREDO_WEBHOOK` (o equivalente no Twilio é `TWILIO_VALIDAR_ASSINATURA`).
+Falhar o deploy é intencional: a validação do webhook é condicional à própria
+variável, então um campo em branco no dashboard não gerava erro nem aviso — só
+um webhook que aceitava POST de qualquer origem, indistinguível de um deploy
+correto. Um bot fora do ar é um incidente visível; um bot aberto não é.
 
 Não defina `PORT` — o Render injeta, e o `CMD` do `Dockerfile` a lê
 (verificado: com `PORT=10000` sobe em 10000, sem ela cai no 8000).
@@ -438,8 +454,10 @@ real, o plano pago do Render resolve, e o resto do projeto não muda.
 | `MENSAGEM_BOAS_VINDAS` | Resposta fixa de `/start` e `/help` | texto padrão |
 | `TELEGRAM_BOT_TOKEN` | Token do bot criado no @BotFather | — |
 | `TELEGRAM_DRY_RUN` | Se `true`, loga a mensagem em vez de enviar de verdade | `true` |
-| `TELEGRAM_SEGREDO_WEBHOOK` | Segredo do `setWebhook`; vazio desliga a checagem | — |
+| `TELEGRAM_SEGREDO_WEBHOOK` | Segredo do `setWebhook`; obrigatório fora de dry-run | — |
 | `TWILIO_DRY_RUN` | Se `true`, loga a mensagem em vez de enviar de verdade | `true` |
+| `TWILIO_VALIDAR_ASSINATURA` | Confere o `X-Twilio-Signature`; obrigatório fora de dry-run | `false` |
+| `EXPOR_FERRAMENTAS_DE_TESTE` | Liga `/api/mensagem` e `/docs`. Deixe `false` em produção | `false` |
 | `PROVEDOR_LLM` | `openai`, `gemini` ou `demo` (responde sem API, para testes) | `openai` |
 | `PROVEDOR_EMBEDDING` | `local` (sentence-transformers) ou `gemini` | `local` |
 | `MODELO_EMBEDDING` | Modelo do provedor **local** | `intfloat/multilingual-e5-large` |
@@ -645,7 +663,7 @@ JSON, porém, ficam órfãs na base — aí sim vale um `--recriar`.
 ## Testes
 
 ```bash
-pytest                  # 133 testes unitários, ~1s, sem tocar em modelo ou API
+pytest                  # 146 testes unitários, ~1s, sem tocar em modelo ou API
 pytest -m integracao    # 38 testes com dataset e embeddings reais
 ```
 
