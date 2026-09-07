@@ -85,6 +85,12 @@ class ServicoAtendimento:
         self._mensagem_transbordo = mensagem_transbordo
         self._mensagem_boas_vindas = mensagem_boas_vindas or MENSAGEM_BOAS_VINDAS
 
+    @property
+    def limiar(self) -> float:
+        """Limiar em vigor. Exposto porque ele depende do modelo de embedding
+        ativo (ver ``resolver_limiar``), então nem sempre está no ``.env``."""
+        return self._limiar
+
     def responder(self, pergunta: str) -> RespostaAtendimento:
         pergunta = (pergunta or "").strip()
         if not pergunta:

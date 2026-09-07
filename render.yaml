@@ -1,0 +1,48 @@
+# Blueprint do Render (https://render.com/docs/blueprint-spec).
+#
+# Com este arquivo no repositório, "New > Blueprint" cria o serviço já
+# configurado. Os segredos NÃO ficam aqui: `sync: false` faz o Render pedi-los
+# uma vez no dashboard e guardá-los fora do Git.
+
+services:
+  - type: web
+    name: attendbot
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+
+    # Vale só durante o deploy: o Render espera este endpoint responder 200
+    # antes de mandar tráfego para a instância nova. Ele NÃO evita a
+    # hibernação — para isso é preciso um ping externo (ver README).
+    healthCheckPath: /health
+
+    envVars:
+      # --- Fronteiras trocáveis ------------------------------------------
+      # Embedding por API: o modelo local exige torch, que não cabe em 512 MB.
+      - key: PROVEDOR_EMBEDDING
+        value: gemini
+      # LLM no tier gratuito do Gemini, para não ter custo recorrente.
+      - key: PROVEDOR_LLM
+        value: gemini
+      - key: CANAL
+        value: telegram
+
+      # --- Comportamento -------------------------------------------------
+      # Filesystem efêmero: o índice é reconstruído a cada subida.
+      - key: REINDEXAR_NO_STARTUP
+        value: "true"
+      # Sem isto o bot só loga a resposta em vez de enviá-la.
+      - key: TELEGRAM_DRY_RUN
+        value: "false"
+      - key: NOME_EMPRESA
+        value: Loja Exemplo
+
+      # --- Segredos (preenchidos no dashboard, nunca no Git) -------------
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      # Deixe em branco só em teste: vazio desliga a checagem do webhook.
+      - key: TELEGRAM_SEGREDO_WEBHOOK
+        sync: false

@@ -5,7 +5,14 @@ from fastapi.testclient import TestClient
 
 from app.atendimento import RespostaAtendimento
 from app.config import Configuracoes
-from app.main import app, obter_config_app, obter_mensageria, obter_servico
+from app.main import (
+    RegistroDeUpdates,
+    app,
+    obter_config_app,
+    obter_mensageria,
+    obter_servico,
+    obter_updates,
+)
 from app.whatsapp.telegram_client import CABECALHO_SEGREDO, ProvedorTelegram
 
 
@@ -64,9 +71,14 @@ def montar_cliente(resposta_padrao):
         config = config or Configuracoes(
             canal="telegram", telegram_segredo_webhook=None
         )
+        # Registro novo por teste: `app` é um singleton de módulo, e todos os
+        # updates daqui usam o mesmo message_id — sem isto o segundo teste
+        # seria descartado como reentrega.
+        updates = RegistroDeUpdates()
         app.dependency_overrides[obter_servico] = lambda: servico
         app.dependency_overrides[obter_mensageria] = lambda: mensageria
         app.dependency_overrides[obter_config_app] = lambda: config
+        app.dependency_overrides[obter_updates] = lambda: updates
         return TestClient(app), servico, mensageria
 
     yield _montar
@@ -258,3 +270,36 @@ def test_webhook_rejeita_corpo_que_nao_e_json(montar_cliente) -> None:
     )
 
     assert resposta.status_code == 400
+
+
+def test_reentrega_do_mesmo_update_nao_responde_duas_vezes(montar_cliente) -> None:
+    """O webhook confirma antes de processar, então o canal pode reenviar.
+
+    É o que acontece ao acordar de uma hibernação: o Telegram já tentou
+    entregar o update algumas vezes enquanto a instância subia, e todas as
+    cópias chegam juntas. Responder a cada uma custaria uma chamada de LLM e
+    entregaria a mesma mensagem várias vezes ao cliente.
+    """
+    client, servico, mensageria = montar_cliente()
+
+    for _ in range(3):
+        assert client.post("/webhook/telegram", json=update()).status_code == 200
+
+    assert len(servico.perguntas) == 1
+    assert len(mensageria.enviados) == 1
+
+
+def test_mesma_message_id_em_conversas_diferentes_e_processada(
+    montar_cliente,
+) -> None:
+    """O message_id do Telegram é sequencial por conversa, não global.
+
+    Sem incluir o chat na chave, a primeira mensagem de um cliente descartaria
+    a de outro — um bug bem pior do que o que o dedup resolve.
+    """
+    client, servico, _ = montar_cliente()
+
+    client.post("/webhook/telegram", json=update(texto="oi", chat_id=42))
+    client.post("/webhook/telegram", json=update(texto="olá", chat_id=99))
+
+    assert servico.perguntas == ["oi", "olá"]

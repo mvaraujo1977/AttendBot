@@ -6,16 +6,24 @@ mas o modelo de embeddings pontuava perguntas fora do domínio tão alto quanto
 as de dentro, e o transbordo nunca disparava. Nenhum teste com dublê pegaria
 isso, e foi este arquivo que pegou.
 
-O que dá para verificar sem chave de API (determinístico, offline):
+Tudo aqui roda contra o ``PROVEDOR_EMBEDDING`` configurado, e é isso que dá
+sentido ao módulo: as faixas de similaridade que ele vigia são propriedade do
+modelo ativo. Trocar de provedor sem recalibrar tem que fazer estes testes
+falharem.
+
+O que dá para verificar com o embedding local (determinístico, sem custo):
 
 * o retrieval recupera a entrada certa da FAQ para perguntas parafraseadas;
-* a primeira barreira (limiar de similaridade) descarta o que nem chega perto.
+* a primeira barreira (limiar de similaridade) descarta o que nem chega perto;
+* a calibração registrada no README continua valendo.
 
-A segunda barreira mora no LLM, então o teste que a cobre só roda quando há
-``OPENAI_API_KEY`` no ambiente — caso contrário é pulado.
+A segunda barreira mora no LLM, então os testes que a cobrem exigem um provedor
+real (``PROVEDOR_LLM=openai`` ou ``gemini``, com a chave correspondente) e são
+pulados sem ele. Um deles também é pulado quando a 1a barreira já barra toda a
+fronteira sozinha — o que acontece com o embedding do Gemini, mas não com o e5.
 
-São lentos (carregam o modelo e indexam no ChromaDB), então ficam fora da
-suíte padrão. Para rodar:
+São lentos (carregam o modelo ou chamam a API, e indexam no ChromaDB), então
+ficam fora da suíte padrão. Para rodar:
 
     pytest -m integracao
 """
@@ -24,9 +32,15 @@ import pytest
 
 from app.atendimento import ServicoAtendimento
 from app.config import obter_configuracoes
-from app.dependencias import criar_llm
+from app.dependencias import criar_embedding, criar_llm, resolver_limiar
 from app.handoff import MotivoTransbordo
 from app.llm.demo_client import ProvedorDemo
+from app.rag.calibracao import (
+    FRONTEIRA,
+    LONGE_DA_BASE,
+    PERGUNTAS_COBERTAS,
+    medir,
+)
 from app.rag.generator import Generator
 from app.rag.ingest import executar_ingestao
 from app.rag.retriever import Retriever
@@ -35,64 +49,39 @@ from app.rag.vector_store import criar_vector_store
 pytestmark = pytest.mark.integracao
 
 pytest.importorskip("chromadb", reason="requer as dependências completas")
-pytest.importorskip("sentence_transformers", reason="requer as dependências completas")
 
 MENSAGEM_TRANSBORDO = "Vou te encaminhar para um atendente humano."
 
-# Perguntas cobertas pela FAQ, escritas como um cliente escreveria — com
-# acentuação, e nenhuma é cópia da pergunta canônica. O segundo item é a
-# pergunta canônica que o retrieval deve recuperar.
-#
-# A acentuação não é detalhe: medindo com as mesmas perguntas sem acento, o
-# MiniLM parecia acertar tudo; com acento, ele cai para 6/10. Foi assim que uma
-# medição descuidada quase fixou o modelo errado no projeto.
-PERGUNTAS_COBERTAS = [
-    ("quando meu pedido vai chegar?", "Qual o prazo de entrega do pedido?"),
-    ("como eu acompanho a entrega?", "Como faço para rastrear meu pedido?"),
-    ("posso pagar com pix?", "Quais formas de pagamento vocês aceitam?"),
-    ("quero trocar um produto que não serviu", "Como solicitar a troca de um produto?"),
-    ("dá pra cancelar a compra?", "Como faço para cancelar meu pedido?"),
-    (
-        "quanto tempo demora pra devolver meu dinheiro?",
-        "Em quanto tempo recebo o reembolso?",
-    ),
-    ("o frete é grátis?", "Qual o valor do frete?"),
-    ("meu produto veio com defeito, e agora?", "Os produtos têm garantia?"),
-    ("preciso da nota fiscal do que comprei", "Vocês emitem nota fiscal?"),
-    ("vocês atendem no domingo?", "Qual o horário de atendimento?"),
-]
-
-# Perguntas sem nenhuma relação com a FAQ: devem morrer já na primeira barreira.
-LONGE_DA_BASE = [
-    "qual a capital da França?",
-    "quem ganhou a copa do mundo de 2022?",
-]
-
-# Perguntas fora do domínio que a similaridade sozinha NÃO separa — elas passam
-# do limiar e só a segunda barreira, no LLM, consegue barrar.
-FRONTEIRA = [
-    "vocês vendem passagem aérea?",
-    "vocês têm vaga de emprego?",
-    "me ajuda a escrever um currículo",
-    "quanto é 2 + 2?",
-]
+# O corpus de 16 perguntas (10 cobertas, 6 fora, todas acentuadas) mora em
+# `app/rag/calibracao.py`, junto da rotina de medição: é o mesmo conjunto que
+# `scripts/calibrar_limiar.py` usa para fixar o limiar. Duplicá-lo aqui
+# deixaria a calibração e o teste que a vigia livres para divergirem.
 
 
 @pytest.fixture(scope="module")
 def indice(tmp_path_factory):
-    """Indexa o dataset real em um ChromaDB temporário, uma vez por módulo."""
+    """Indexa o dataset real em um ChromaDB temporário, uma vez por módulo.
+
+    Roda contra o ``PROVEDOR_EMBEDDING`` configurado — é o ponto: as faixas de
+    similaridade que este módulo vigia são uma propriedade do modelo ativo, e
+    trocar de provedor tem que fazer estes testes falharem até a recalibração.
+    """
     config = obter_configuracoes().model_copy(
         update={"diretorio_chroma": tmp_path_factory.mktemp("chroma_integracao")}
     )
-    executar_ingestao(config)
-    return config, Retriever(criar_vector_store(config), top_k=config.top_k)
+    embedding = criar_embedding(config)
+    executar_ingestao(config, embedding=embedding)
+    retriever = Retriever(
+        criar_vector_store(config, embedding), top_k=config.top_k
+    )
+    return config, retriever, resolver_limiar(config, embedding)
 
 
-def _montar_servico(config, retriever, llm) -> ServicoAtendimento:
+def _montar_servico(config, retriever, limiar, llm) -> ServicoAtendimento:
     return ServicoAtendimento(
         retriever=retriever,
         generator=Generator(llm, nome_empresa=config.nome_empresa),
-        limiar_similaridade=config.limiar_similaridade,
+        limiar_similaridade=limiar,
         mensagem_transbordo=MENSAGEM_TRANSBORDO,
     )
 
@@ -102,7 +91,7 @@ def test_retrieval_recupera_a_entrada_certa_da_faq(
     indice, pergunta: str, canonica_esperada: str
 ) -> None:
     """Qualidade do retrieval: é a base de tudo que vem depois."""
-    _, retriever = indice
+    _, retriever, _limiar = indice
 
     resultados = retriever.buscar(pergunta)
 
@@ -118,20 +107,20 @@ def test_pergunta_coberta_passa_da_primeira_barreira(
     indice, pergunta: str, _canonica: str
 ) -> None:
     """Nenhuma pergunta legítima pode morrer no limiar de similaridade."""
-    config, retriever = indice
+    config, retriever, limiar = indice
 
     melhor = retriever.buscar(pergunta)[0].similaridade
 
-    assert melhor >= config.limiar_similaridade, (
+    assert melhor >= limiar, (
         f"'{pergunta}' ficou em {melhor:.3f}, abaixo do limiar "
-        f"{config.limiar_similaridade:.2f}: o bot transbordaria sem necessidade"
+        f"{limiar:.2f}: o bot transbordaria sem necessidade"
     )
 
 
 @pytest.mark.parametrize("pergunta", LONGE_DA_BASE)
 def test_pergunta_distante_morre_na_primeira_barreira(indice, pergunta: str) -> None:
-    config, retriever = indice
-    servico = _montar_servico(config, retriever, ProvedorDemo())
+    config, retriever, limiar = indice
+    servico = _montar_servico(config, retriever, limiar, ProvedorDemo())
 
     resposta = servico.responder(pergunta)
 
@@ -142,43 +131,93 @@ def test_pergunta_distante_morre_na_primeira_barreira(indice, pergunta: str) -> 
     assert resposta.motivo == MotivoTransbordo.BAIXA_SIMILARIDADE.value
 
 
-def test_a_primeira_barreira_sozinha_nao_basta(indice) -> None:
-    """Documenta *por que* existe a segunda barreira.
+def test_a_calibracao_do_provedor_ativo_continua_valendo(indice) -> None:
+    """Regressão da calibração, no formato da tabela do README.
 
-    Se algum dia a similaridade passar a separar essas perguntas sozinha, este
-    teste falha — e aí a segunda barreira virou custo sem benefício.
+    Roda o mesmo corpus e a mesma aritmética de ``scripts/calibrar_limiar.py``,
+    então se alguém mexer no dataset, no modelo ou no limiar sem recalibrar, é
+    aqui que aparece.
     """
-    config, retriever = indice
+    _, retriever, limiar = indice
 
-    passaram = [
-        (p, retriever.buscar(p)[0].similaridade)
-        for p in FRONTEIRA
-        if retriever.buscar(p)[0].similaridade >= config.limiar_similaridade
-    ]
+    medicao = medir(retriever)
 
-    assert passaram, (
-        "nenhuma pergunta de fronteira passou do limiar: a similaridade agora "
-        "separa sozinha e a segunda barreira pode ser reavaliada"
+    assert medicao.acertos == len(PERGUNTAS_COBERTAS), (
+        f"o retrieval errou {len(PERGUNTAS_COBERTAS) - medicao.acertos} "
+        "entrada(s): limiar nenhum conserta modelo que busca a resposta errada"
+    )
+    assert medicao.faixa_cobertas[0] >= limiar, (
+        f"a pergunta legítima mais fraca ficou em {medicao.faixa_cobertas[0]:.3f}, "
+        f"abaixo do limiar {limiar:.2f}: o bot transbordaria sem necessidade"
     )
 
 
-@pytest.mark.parametrize("pergunta", FRONTEIRA)
-def test_segunda_barreira_barra_o_que_a_similaridade_deixou_passar(
-    indice, pergunta: str
-) -> None:
-    """Exige LLM de verdade: é ele quem julga se o contexto responde."""
-    config, retriever = indice
-    if not config.openai_api_key or config.provedor_llm != "openai":
-        pytest.skip("requer OPENAI_API_KEY e PROVEDOR_LLM=openai")
+def _llm_real(config):
+    """LLM de verdade para os testes das duas barreiras, ou pula o teste.
 
-    servico = _montar_servico(config, retriever, criar_llm(config))
+    Serve qualquer provedor configurado — o transbordo é do `ServicoAtendimento`
+    e não depende de quem gera o texto. Amarrar na OpenAI deixaria a 2a barreira
+    sem cobertura justamente na configuração que vai para produção (Gemini).
+    """
+    if config.provedor_llm.strip().lower() == "demo":
+        pytest.skip("requer um LLM real (PROVEDOR_LLM=openai ou gemini)")
+    try:
+        return criar_llm(config)
+    except ValueError as erro:
+        pytest.skip(str(erro))
+
+
+@pytest.mark.parametrize("pergunta", FRONTEIRA)
+def test_pergunta_de_fronteira_nunca_e_respondida(indice, pergunta: str) -> None:
+    """O invariante que vale para qualquer modelo de embedding.
+
+    QUAL barreira segura essas perguntas depende do modelo, e os dois regimes
+    estão medidos no README: com o e5 local elas passam do limiar e só o LLM as
+    barra; com o embedding do Gemini a 1a barreira já as separa com folga. O
+    que não pode variar é o resultado — pergunta sem resposta na FAQ não é
+    respondida.
+    """
+    config, retriever, limiar = indice
+    servico = _montar_servico(config, retriever, limiar, _llm_real(config))
+
     resposta = servico.responder(pergunta)
 
     assert resposta.transbordo, (
         f"'{pergunta}' não é coberta pela FAQ, mas o bot respondeu "
         f"'{resposta.texto}'"
     )
-    assert resposta.motivo == MotivoTransbordo.CONTEXTO_INSUFICIENTE.value
+    assert resposta.motivo in {
+        MotivoTransbordo.BAIXA_SIMILARIDADE.value,
+        MotivoTransbordo.CONTEXTO_INSUFICIENTE.value,
+    }
+
+
+def test_segunda_barreira_barra_o_que_a_similaridade_deixou_passar(indice) -> None:
+    """Cobre a 2a barreira só com o que a 1a de fato deixou passar.
+
+    Com um embedding que separa as faixas sozinho não sobra nada para ela
+    julgar neste corpus, e o teste é pulado — o que não a aposenta: seis
+    perguntas não são prova de cobertura, e ela não custa chamada extra.
+    """
+    config, retriever, limiar = indice
+    passaram = [
+        pergunta
+        for pergunta in FRONTEIRA
+        if retriever.buscar(pergunta)[0].similaridade >= limiar
+    ]
+    if not passaram:
+        pytest.skip(
+            "a 1a barreira barrou toda a fronteira neste corpus; nada chega à 2a"
+        )
+
+    servico = _montar_servico(config, retriever, limiar, _llm_real(config))
+
+    for pergunta in passaram:
+        resposta = servico.responder(pergunta)
+        assert resposta.motivo == MotivoTransbordo.CONTEXTO_INSUFICIENTE.value, (
+            f"'{pergunta}' passou do limiar e devia ser barrada pelo LLM, "
+            f"mas o motivo foi {resposta.motivo}"
+        )
 
 
 @pytest.mark.parametrize(("pergunta", "_canonica"), PERGUNTAS_COBERTAS)
@@ -186,11 +225,9 @@ def test_pergunta_coberta_e_respondida_com_llm_real(
     indice, pergunta: str, _canonica: str
 ) -> None:
     """A segunda barreira não pode ser conservadora demais e barrar o legítimo."""
-    config, retriever = indice
-    if not config.openai_api_key or config.provedor_llm != "openai":
-        pytest.skip("requer OPENAI_API_KEY e PROVEDOR_LLM=openai")
+    config, retriever, limiar = indice
+    servico = _montar_servico(config, retriever, limiar, _llm_real(config))
 
-    servico = _montar_servico(config, retriever, criar_llm(config))
     resposta = servico.responder(pergunta)
 
     assert not resposta.transbordo, (

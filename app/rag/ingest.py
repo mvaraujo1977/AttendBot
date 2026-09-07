@@ -128,8 +128,51 @@ def indexar(itens: Sequence[ItemFAQ], vector_store) -> int:
     return len(textos)
 
 
-def executar_ingestao(config: Configuracoes, recriar: bool = False) -> int:
+def ids_do_dataset(itens: Sequence[ItemFAQ]) -> set[str]:
+    """Todos os ids que o dataset deveria ter no índice (perguntas + variações)."""
+    ids = set()
+    for item in itens:
+        ids.add(item.id)
+        ids.update(item.id_da_variacao(variacao) for variacao in item.variacoes)
+    return ids
+
+
+def garantir_indice(config: Configuracoes, vector_store) -> int:
+    """Indexa o FAQ se o índice ainda não o refletir. Devolve quantos gravou.
+
+    Chamada na subida da aplicação. É o que substitui um volume persistente no
+    Render, cujo plano Free não tem disco e apaga o ``chroma_db`` a cada deploy,
+    restart ou hibernação — indexar 68 documentos custa segundos, e o índice
+    sempre nasce coerente com o ``faq_dataset.json`` que subiu junto.
+
+    Compara ids em vez de contar documentos: assim uma pergunta nova no JSON é
+    detectada, e reiniciar o serviço com o índice já pronto (o caso local) não
+    gasta uma chamada de embedding sequer.
+    """
+    itens = carregar_faq(config.caminho_faq)
+    esperados = ids_do_dataset(itens)
+    existentes = set(vector_store.get(include=[])["ids"])
+
+    if esperados <= existentes:
+        logger.info(
+            "Índice já contém os %d documentos do FAQ; ingestão dispensada.",
+            len(esperados),
+        )
+        return 0
+
+    logger.info(
+        "Índice incompleto (%d de %d documentos): indexando o FAQ.",
+        len(esperados & existentes),
+        len(esperados),
+    )
+    return indexar(itens, vector_store)
+
+
+def executar_ingestao(
+    config: Configuracoes, recriar: bool = False, embedding=None
+) -> int:
     """Fluxo completo: lê o JSON, gera os embeddings e grava no Chroma."""
+    from app.dependencias import criar_embedding
     from app.rag.vector_store import criar_vector_store
 
     if recriar and config.diretorio_chroma.exists():
@@ -137,7 +180,8 @@ def executar_ingestao(config: Configuracoes, recriar: bool = False) -> int:
         shutil.rmtree(config.diretorio_chroma)
 
     itens = carregar_faq(config.caminho_faq)
-    total = indexar(itens, criar_vector_store(config))
+    vector_store = criar_vector_store(config, embedding or criar_embedding(config))
+    total = indexar(itens, vector_store)
     logger.info(
         "%d documentos indexados na coleção %s (%d perguntas + %d variações).",
         total,

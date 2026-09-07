@@ -24,6 +24,13 @@ do cliente? Se não responder — ou se responder só parcialmente, ou se o \
 assunto for outro — responda EXATAMENTE com a palavra {sinal}, sozinha, sem \
 nenhum outro texto. É melhor encaminhar para um humano do que arriscar.
 
+Atenção a um caso que parece falta de informação e não é: quando o contexto \
+traz uma lista ou faixa completa — dias de atendimento, formas de pagamento, \
+prazos, regiões atendidas —, ele também responde sobre o que está FORA dela. \
+Dizer "não atendemos aos domingos" a partir de uma lista que vai de segunda a \
+sábado é ler o contexto, não inventar. Se a lista for claramente parcial ou um \
+exemplo, isso não vale e o certo é {sinal}.
+
 Se o contexto responder, siga estas regras:
 - Use APENAS as informações do contexto. Nunca invente prazos, valores, \
 políticas ou links.

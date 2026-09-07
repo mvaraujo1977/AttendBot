@@ -5,7 +5,13 @@ import json
 import pytest
 
 from app.config import obter_configuracoes
-from app.rag.ingest import ItemFAQ, carregar_faq, indexar
+from app.rag.ingest import (
+    ItemFAQ,
+    carregar_faq,
+    garantir_indice,
+    ids_do_dataset,
+    indexar,
+)
 
 
 class VectorStoreEspiao:
@@ -20,6 +26,7 @@ class VectorStoreEspiao:
 
 
 def _escrever(tmp_path, dados) -> "object":
+    tmp_path.mkdir(parents=True, exist_ok=True)
     caminho = tmp_path / "faq.json"
     caminho.write_text(json.dumps(dados, ensure_ascii=False), encoding="utf-8")
     return caminho
@@ -180,3 +187,73 @@ def test_mesma_variacao_em_entradas_diferentes_nao_colide() -> None:
     b = ItemFAQ(pergunta="Qual o prazo?", resposta="R2.", variacoes=("quanto custa?",))
 
     assert a.id_da_variacao("quanto custa?") != b.id_da_variacao("quanto custa?")
+
+
+# --- Reindexação na subida ---------------------------------------------------
+#
+# O plano Free do Render não tem disco: o chroma_db some a cada deploy, restart
+# ou hibernação, e o índice é reconstruído na subida. Estes testes cobrem a
+# decisão de reconstruir ou não — errar para o lado de não reconstruir deixaria
+# o bot no ar respondendo `sem_resultados` a todo cliente.
+
+
+class VectorStoreComIds(VectorStoreEspiao):
+    """Espião que também responde ``get``, como o Chroma."""
+
+    def __init__(self, ids: list[str] | None = None) -> None:
+        super().__init__()
+        self.existentes = list(ids or [])
+
+    def get(self, include=None):
+        return {"ids": list(self.existentes)}
+
+
+def _config_com_faq(tmp_path, dados):
+    return obter_configuracoes().model_copy(
+        update={"caminho_faq": _escrever(tmp_path, dados)}
+    )
+
+
+def test_garantir_indice_indexa_quando_a_base_esta_vazia(tmp_path) -> None:
+    config = _config_com_faq(
+        tmp_path, [{"pergunta": "P?", "resposta": "R.", "variacoes": ["p?"]}]
+    )
+    store = VectorStoreComIds()
+
+    assert garantir_indice(config, store) == 2
+    assert len(store.chamadas) == 1
+
+
+def test_garantir_indice_nao_gasta_embedding_quando_ja_esta_completo(
+    tmp_path,
+) -> None:
+    """O caso local: reiniciar o app não deve custar chamada de API nenhuma."""
+    dados = [{"pergunta": "P?", "resposta": "R.", "variacoes": ["p?"]}]
+    config = _config_com_faq(tmp_path, dados)
+    store = VectorStoreComIds(sorted(ids_do_dataset(carregar_faq(config.caminho_faq))))
+
+    assert garantir_indice(config, store) == 0
+    assert store.chamadas == []
+
+
+def test_garantir_indice_reindexa_quando_o_faq_ganhou_pergunta(tmp_path) -> None:
+    """Compara ids, não contagem: pergunta nova precisa entrar no índice."""
+    antigo = [{"pergunta": "P1?", "resposta": "R."}]
+    config_antiga = _config_com_faq(tmp_path / "a", antigo)
+    ids_antigos = sorted(ids_do_dataset(carregar_faq(config_antiga.caminho_faq)))
+
+    novo = antigo + [{"pergunta": "P2?", "resposta": "R2."}]
+    config = _config_com_faq(tmp_path / "b", novo)
+    store = VectorStoreComIds(ids_antigos)
+
+    assert garantir_indice(config, store) == 2
+
+
+def test_ids_do_dataset_cobre_perguntas_e_variacoes() -> None:
+    item = ItemFAQ(pergunta="P?", resposta="R.", variacoes=("v1", "v2"))
+
+    assert ids_do_dataset([item]) == {
+        item.id,
+        item.id_da_variacao("v1"),
+        item.id_da_variacao("v2"),
+    }

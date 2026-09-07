@@ -9,7 +9,14 @@ from fastapi.testclient import TestClient
 
 from app.atendimento import RespostaAtendimento
 from app.config import Configuracoes
-from app.main import app, obter_config_app, obter_mensageria, obter_servico
+from app.main import (
+    RegistroDeUpdates,
+    app,
+    obter_config_app,
+    obter_mensageria,
+    obter_servico,
+    obter_updates,
+)
 from app.whatsapp.base import MensagemRecebida, ProvedorMensageria
 from app.whatsapp.twilio_client import ProvedorTwilio
 
@@ -58,9 +65,13 @@ def montar_cliente(resposta_padrao):
         servico = ServicoFalso(resposta or resposta_padrao)
         mensageria = mensageria or MensageriaFalsa()
         config = config or Configuracoes()
+        # Registro novo por teste (ver o comentário equivalente em
+        # tests/test_telegram.py).
+        updates = RegistroDeUpdates()
         app.dependency_overrides[obter_servico] = lambda: servico
         app.dependency_overrides[obter_mensageria] = lambda: mensageria
         app.dependency_overrides[obter_config_app] = lambda: config
+        app.dependency_overrides[obter_updates] = lambda: updates
         criados.append(True)
         return TestClient(app), servico, mensageria
 

@@ -31,7 +31,7 @@ def main() -> None:
         _imprimir(servico, " ".join(sys.argv[1:]))
         return
 
-    print(f"Pronto. Limiar de transbordo: {config.limiar_similaridade:.2f}")
+    print(f"Pronto. Limiar de transbordo: {servico.limiar:.2f}")
     print("Digite sua pergunta (Ctrl+C para sair).")
     while True:
         try:

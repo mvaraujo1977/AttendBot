@@ -1,0 +1,27 @@
+# O índice é reconstruído na subida (ver garantir_indice): mandar o do
+# desenvolvedor para a imagem só levaria vetores de outro modelo de embedding.
+chroma_db/
+
+.git/
+.github/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+.env
+*.env.local
+*.skill
+
+tests/
+scripts/
+README.md
+requirements-local.txt
+
+.vscode/
+.idea/

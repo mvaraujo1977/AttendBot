@@ -1,3 +1,8 @@
+# Dependências de PRODUÇÃO. Precisam caber nos 512 MB do plano Free do Render,
+# então nada de torch aqui: o embedding de produção é via API (Gemini).
+# Para rodar o modelo de embedding offline, instale também o
+# requirements-local.txt.
+
 # --- API / webhook ---
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30
@@ -5,19 +10,21 @@ python-multipart>=0.0.9
 pydantic>=2.7
 pydantic-settings>=2.3
 
-# --- RAG (LangChain + ChromaDB + embeddings locais) ---
+# --- RAG (ChromaDB + a interface de embeddings do LangChain) ---
+# langchain-core entra só pelo contrato `Embeddings`, que o Chroma consome;
+# quem implementa é app/rag/embedding/ (ver AdaptadorLangChain).
 langchain-core>=0.3
 langchain-chroma>=0.2
-langchain-huggingface>=0.1
-sentence-transformers>=3.0
 chromadb>=0.5
 
 # --- LLM ---
+# O provedor Gemini fala REST direto pelo httpx abaixo, sem SDK: o pacote
+# oficial arrastaria grpcio e protobuf para chamar um endpoint.
 openai>=1.40
 
 # --- Canais de mensageria ---
 twilio>=9.0
-# httpx: chamadas à Bot API do Telegram (e usado pelo TestClient do FastAPI)
+# httpx: Bot API do Telegram, API do Gemini e o TestClient do FastAPI
 httpx>=0.27
 
 # --- Testes ---

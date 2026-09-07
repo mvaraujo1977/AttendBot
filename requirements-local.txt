@@ -1,0 +1,9 @@
+# Extra opcional: embedding rodando na própria máquina (PROVEDOR_EMBEDDING=local).
+#
+# Instale por cima do requirements.txt quando quiser desenvolver offline, sem
+# chave de API e sem gastar cota. São ~2,5 GB entre torch e os pesos do modelo,
+# que é exatamente o motivo de estarem fora das dependências de produção.
+#
+#     pip install -r requirements.txt -r requirements-local.txt
+
+sentence-transformers>=3.0
