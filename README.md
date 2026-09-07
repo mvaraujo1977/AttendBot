@@ -45,6 +45,7 @@ humano. O AttendBot resolve os dois:
 Mensagem recebida
        │
        ├── /start, /help, /ajuda ──► boas-vindas (texto fixo, sem RAG)
+       ├── "oi", "bom dia", ...  ──► boas-vindas (só se a mensagem for só saudação)
        │
        ▼
  Gera embedding da pergunta (modelo local OU API do Gemini)
@@ -84,7 +85,7 @@ Mensagem recebida
 - **Twilio** (WhatsApp) e **Telegram Bot API** — dois canais sobre a mesma
   interface, escolhidos por variável de ambiente
 - **Docker + Render** — deploy no plano Free, sem custo recorrente
-- **Pytest** — 158 testes unitários (rápidos, com dublês) e 38 de integração
+- **Pytest** — 193 testes unitários (rápidos, com dublês) e 38 de integração
   (dataset e embeddings reais)
 
 ### Três fronteiras trocáveis (o ponto arquitetural do projeto)
@@ -233,7 +234,7 @@ envio) é exatamente o mesmo código.
 | **Telegram** | `telegram` | `POST /webhook/telegram` | grátis | grátis |
 | **WhatsApp (Twilio)** | `twilio` | `POST /webhook/whatsapp` | funciona no trial | **exige conta paga** |
 
-### Comandos
+### Comandos e saudações
 
 `/start`, `/help` e `/ajuda` são respondidos com uma mensagem fixa de
 boas-vindas, sem passar pelo RAG. Não é economia de chamada: `/start` é o que o
@@ -247,6 +248,23 @@ formas que o Telegram usa na prática — `/start@nome_do_bot` em grupos e
 `/start <payload>` em links de convite. Comando desconhecido segue o fluxo
 normal e acaba em transbordo, que é o certo: quem inventou um comando quer
 falar com alguém.
+
+**Saudações têm o mesmo tratamento, pelo mesmo motivo.** "Olá" não é pergunta
+de FAQ, então o transbordo estava tecnicamente certo — e péssimo, porque é a
+primeira coisa que a maioria manda para um bot: a conversa começava chamando um
+humano. `oi`, `olá`, `opa`, `e aí`, `bom dia`, `boa tarde` e `boa noite` viram
+boas-vindas sem gastar embedding nem LLM.
+
+A detecção compara a mensagem **inteira** com a lista, nunca por substring —
+procurar "boa noite" dentro do texto faria "boa noite, meu pedido não chegou"
+virar boas-vindas e engolir o problema do cliente. Mensagens com vírgula são
+cortadas em pedaços e **todos** precisam ser saudação, o que aceita "oi, bom
+dia" (uma mensagem, duas saudações) e recusa "bom dia, qual o prazo de
+entrega?" (o segundo pedaço é pergunta, então vai para o RAG).
+
+A lista é curta de propósito. Deixar uma saudação incomum cair no RAG custa um
+transbordo, que é uma saída correta; sequestrar uma pergunta de verdade custa
+um cliente sem resposta.
 
 Personalize o texto com `MENSAGEM_BOAS_VINDAS` no `.env`.
 
@@ -665,7 +683,7 @@ JSON, porém, ficam órfãs na base — aí sim vale um `--recriar`.
 ## Testes
 
 ```bash
-pytest                  # 158 testes unitários, ~1s, sem tocar em modelo ou API
+pytest                  # 193 testes unitários, ~1s, sem tocar em modelo ou API
 pytest -m integracao    # 38 testes com dataset e embeddings reais
 ```
 
@@ -682,8 +700,8 @@ cobrem a conversão de distância em similaridade, as quatro causas de
 transbordo, o reconhecimento do sinal do LLM, a validação e o upsert do
 dataset, e os dois webhooks HTTP — incluindo o parsing do update do Telegram, a
 checagem do segredo, o descarte de updates que não são mensagem, o
-curto-circuito dos comandos (provado pelo dublê: nem busca nem LLM são
-chamados) e a expansão das variações na ingestão.
+curto-circuito dos comandos e das saudações (provado pelo dublê: nem busca nem
+LLM são chamados) e a expansão das variações na ingestão.
 
 O que as fronteiras novas acrescentaram, tudo com o transporte HTTP
 substituído — nenhum teste chama a API do Gemini:

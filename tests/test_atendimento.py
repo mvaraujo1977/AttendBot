@@ -284,3 +284,120 @@ def test_comando_com_payload_nao_vai_inteiro_para_o_log(caplog) -> None:
     assert resposta.texto == MENSAGEM_BOAS_VINDAS
     assert "ref_campanha_cliente_12345" not in caplog.text
     assert "/start" in caplog.text
+
+
+# --- Saudações (respondidas sem passar pelo RAG) -----------------------------
+
+
+@pytest.mark.parametrize(
+    "saudacao",
+    [
+        "oi",
+        "Oi",
+        "OI",
+        "oi!",
+        "  oi  ",
+        "olá",
+        "Olá!",
+        "ola",
+        "OLÁ",
+        "opa",
+        "oie",
+        "e aí",
+        "E aí?",
+        "eai",
+        "bom dia",
+        "Bom dia!",
+        "BOM DIA",
+        "boa tarde",
+        "Boa tarde.",
+        "boa noite",
+        "Boa noite!",
+        "oi, bom dia",  # uma mensagem, duas saudações
+        "Olá! Boa tarde.",
+    ],
+)
+def test_saudacao_responde_boas_vindas_sem_consultar_o_rag(saudacao: str) -> None:
+    llm = LLMFalso("nao deveria ser chamado")
+    store = VectorStoreFalso([(_documento("Qual o frete?", "Grátis."), 0.10)])
+    servico = ServicoAtendimento(
+        retriever=Retriever(store, top_k=3),
+        generator=Generator(llm, nome_empresa="Loja Exemplo"),
+        limiar_similaridade=LIMIAR,
+        mensagem_transbordo=MENSAGEM_TRANSBORDO,
+    )
+
+    resposta = servico.responder(saudacao)
+
+    assert resposta.texto == MENSAGEM_BOAS_VINDAS
+    assert resposta.transbordo is False
+    # A prova de que nada foi gasto: nem embedding da consulta, nem LLM.
+    assert store.chamadas == []
+    assert llm.prompts == []
+
+
+@pytest.mark.parametrize(
+    "mensagem",
+    [
+        # Saudação + pergunta: o cliente quer uma resposta, não boas-vindas.
+        "bom dia, qual o prazo de entrega?",
+        "Bom dia! Qual o prazo de entrega?",
+        "oi, quanto custa o frete?",
+        "olá, meu pedido não chegou",
+        # A saudação no meio ou no fim não pode sequestrar a mensagem.
+        "meu pedido não chegou, boa noite",
+        "queria saber se vocês abrem de boa noite até de manhã",
+        "recebi o pedido de bom dia",
+        # Perguntas comuns que contêm um termo da lista como substring.
+        "qual o horário de atendimento?",
+        "voces entregam a noite?",
+    ],
+)
+def test_mensagem_com_pergunta_junto_vai_para_o_rag(mensagem: str) -> None:
+    """Só saudação isolada é curto-circuitada; substring não conta."""
+    llm = LLMFalso("Chega em 7 dias.")
+    store = VectorStoreFalso(
+        [(_documento("Qual o prazo de entrega?", "De 3 a 7 dias úteis."), 0.10)]
+    )
+    servico = ServicoAtendimento(
+        retriever=Retriever(store, top_k=3),
+        generator=Generator(llm, nome_empresa="Loja Exemplo"),
+        limiar_similaridade=LIMIAR,
+        mensagem_transbordo=MENSAGEM_TRANSBORDO,
+    )
+
+    resposta = servico.responder(mensagem)
+
+    assert resposta.texto != MENSAGEM_BOAS_VINDAS
+    assert store.chamadas, "a busca vetorial precisa ter acontecido"
+    assert llm.prompts, "o LLM precisa ter sido consultado"
+
+
+def test_saudacao_desconhecida_segue_para_o_rag() -> None:
+    """A lista é conservadora: o que ela não cobre continua no caminho normal."""
+    servico = _criar_servico([], LLMFalso("x"))
+
+    resposta = servico.responder("salve, blz?")
+
+    assert resposta.transbordo is True
+    assert resposta.motivo == MotivoTransbordo.SEM_RESULTADOS.value
+
+
+def test_saudacao_usa_a_mensagem_de_boas_vindas_configurada() -> None:
+    servico = ServicoAtendimento(
+        retriever=Retriever(VectorStoreFalso([]), top_k=3),
+        generator=Generator(LLMFalso(), nome_empresa="Loja Exemplo"),
+        limiar_similaridade=LIMIAR,
+        mensagem_transbordo=MENSAGEM_TRANSBORDO,
+        mensagem_boas_vindas="Oi! Como posso ajudar?",
+    )
+
+    assert servico.responder("bom dia").texto == "Oi! Como posso ajudar?"
+
+
+def test_pontuacao_sozinha_nao_e_saudacao() -> None:
+    servico = _criar_servico([], LLMFalso("x"))
+
+    resposta = servico.responder("???")
+
+    assert resposta.texto != MENSAGEM_BOAS_VINDAS

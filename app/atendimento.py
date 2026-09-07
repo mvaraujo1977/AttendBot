@@ -6,6 +6,8 @@ regra de handoff.
 """
 
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
 
 from app.handoff import MotivoTransbordo, avaliar_transbordo, filtrar_contexto
@@ -32,6 +34,32 @@ MENSAGEM_BOAS_VINDAS = (
 # Telegram, mas ficam aqui — e não no provedor — porque a resposta é a mesma
 # em qualquer canal e nenhuma delas depende de transporte.
 COMANDOS_BOAS_VINDAS = frozenset({"/start", "/help", "/ajuda"})
+
+# Saudações respondidas com as boas-vindas, sem passar pelo RAG. "Olá" é
+# tecnicamente uma pergunta que a FAQ não cobre, então o transbordo estava
+# certo — e péssimo, porque é a primeira coisa que a maioria manda para um bot:
+# a conversa começava chamando um humano.
+#
+# A lista é curta de propósito. O erro caro aqui não é deixar uma saudação
+# incomum passar para o RAG (o transbordo continua sendo uma saída correta), é
+# sequestrar uma pergunta de verdade e responder boas-vindas para quem
+# perguntou algo — por isso só formas que, sozinhas, não são pergunta nenhuma.
+SAUDACOES = frozenset(
+    {
+        "oi",
+        "oie",
+        "ola",
+        "opa",
+        "e ai",
+        "eai",
+        "bom dia",
+        "boa tarde",
+        "boa noite",
+    }
+)
+
+# O que separa saudação de saudação numa mesma mensagem ("oi, bom dia").
+SEPARADORES = re.compile(r"[,.;!]+")
 
 # Corte da pergunta antes de ela virar embedding e prompt. O custo em tokens é
 # linear no tamanho, e o corte mora aqui — e não no schema da rota — para valer
@@ -60,6 +88,41 @@ def _comando(texto: str) -> str | None:
     if not texto.startswith("/"):
         return None
     return texto.split(maxsplit=1)[0].split("@", 1)[0].lower()
+
+
+def _normalizar(texto: str) -> str:
+    """Baixa a caixa, tira acento e pontuação das bordas, colapsa espaços.
+
+    É o que faz "Olá!", "OLA" e "  olá  " chegarem à mesma chave — cliente não
+    digita de forma canônica.
+    """
+    sem_acento = "".join(
+        caractere
+        for caractere in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(caractere) != "Mn"
+    )
+    sem_borda = re.sub(r"^\W+|\W+$", "", sem_acento.lower(), flags=re.UNICODE)
+    return " ".join(sem_borda.split())
+
+
+def _e_saudacao(texto: str) -> bool:
+    """A mensagem é *só* saudação, sem pergunta junto?
+
+    Compara a mensagem **inteira** com a lista, nunca por substring: procurar
+    "boa noite" dentro do texto faria "boa noite, meu pedido não chegou" virar
+    boas-vindas e engolir o problema do cliente.
+
+    O corte por separadores existe para "oi, bom dia", que é uma mensagem só e
+    duas saudações. Como *todos* os pedaços precisam ser saudação, "bom dia,
+    qual o prazo de entrega?" continua indo para o RAG — o segundo pedaço é uma
+    pergunta.
+    """
+    partes = [
+        normalizada
+        for parte in SEPARADORES.split(texto)
+        if (normalizada := _normalizar(parte))
+    ]
+    return bool(partes) and all(parte in SAUDACOES for parte in partes)
 
 
 def _e_sinal_de_transbordo(texto: str) -> bool:
@@ -125,6 +188,17 @@ class ServicoAtendimento:
             # Só o comando normalizado: `/start <payload>` carrega o payload do
             # link de convite, que não tem por que ficar registrado.
             logger.info("Comando respondido sem RAG: %s", comando)
+            return RespostaAtendimento(
+                texto=self._mensagem_boas_vindas,
+                transbordo=False,
+                similaridade=0.0,
+            )
+
+        # Mesmo curto-circuito, pelo mesmo motivo: "olá" não é pergunta de
+        # cliente, e mandá-lo ao RAG só produz transbordo — um humano chamado
+        # para responder a um "oi".
+        if _e_saudacao(pergunta):
+            logger.info("Saudação respondida sem RAG.")
             return RespostaAtendimento(
                 texto=self._mensagem_boas_vindas,
                 transbordo=False,
