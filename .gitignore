@@ -12,8 +12,12 @@ dist/
 build/
 
 # Variáveis de ambiente e segredos
+# O glob cobre as variantes que aparecem na mão — .env.bak, .env.local,
+# .env.producao — sem deixar o .env.example de fora, que é versionado.
 .env
+.env.*
 *.env.local
+!.env.example
 
 # Modelos baixados / cache do sentence-transformers e HuggingFace
 .cache/
