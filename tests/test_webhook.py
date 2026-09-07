@@ -4,6 +4,9 @@ O ``TestClient`` só executa o lifespan quando usado como context manager, entã
 aqui nada de ChromaDB ou OpenAI é carregado.
 """
 
+import logging
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -11,14 +14,16 @@ from pydantic import ValidationError
 from app.atendimento import RespostaAtendimento
 from app.config import Configuracoes
 from app.main import (
+    LimitePorRemetente,
     RegistroDeUpdates,
     app,
     obter_config_app,
+    obter_limite,
     obter_mensageria,
     obter_servico,
     obter_updates,
 )
-from app.whatsapp.base import MensagemRecebida, ProvedorMensageria
+from app.whatsapp.base import MensagemRecebida, ProvedorMensageria, pseudonimo
 from app.whatsapp.twilio_client import ProvedorTwilio
 
 
@@ -62,17 +67,20 @@ def montar_cliente(resposta_padrao):
     """Devolve (client, servico, mensageria) com as dependências trocadas."""
     criados = []
 
-    def _montar(mensageria=None, config=None, resposta=None):
+    def _montar(mensageria=None, config=None, resposta=None, limite=None):
         servico = ServicoFalso(resposta or resposta_padrao)
         mensageria = mensageria or MensageriaFalsa()
         config = config or Configuracoes()
         # Registro novo por teste (ver o comentário equivalente em
-        # tests/test_telegram.py).
+        # tests/test_telegram.py). O mesmo vale para o teto por remetente: um
+        # limite compartilhado faria um teste consumir a cota do seguinte.
         updates = RegistroDeUpdates()
+        limite = limite or LimitePorRemetente()
         app.dependency_overrides[obter_servico] = lambda: servico
         app.dependency_overrides[obter_mensageria] = lambda: mensageria
         app.dependency_overrides[obter_config_app] = lambda: config
         app.dependency_overrides[obter_updates] = lambda: updates
+        app.dependency_overrides[obter_limite] = lambda: limite
         criados.append(True)
         return TestClient(app), servico, mensageria
 
@@ -267,3 +275,143 @@ def test_dry_run_nao_exige_segredo() -> None:
     """Rodar local sem credencial continua funcionando: em dry-run nada sai."""
     assert Configuracoes(canal="telegram", telegram_dry_run=True).canal == "telegram"
     assert Configuracoes(canal="twilio", twilio_dry_run=True).canal == "twilio"
+
+
+# --- Teto de mensagens por remetente -----------------------------------------
+
+
+def test_limite_descarta_o_excesso_do_mesmo_remetente(montar_cliente) -> None:
+    """Cada mensagem custa duas chamadas de API; o teto é o que segura o volume."""
+    client, servico, mensageria = montar_cliente(
+        limite=LimitePorRemetente(maximo=3, janela_segundos=60.0)
+    )
+
+    for indice in range(10):
+        client.post(
+            "/webhook/whatsapp",
+            data={
+                "From": "whatsapp:+5511999999999",
+                "Body": f"pergunta {indice}",
+                "MessageSid": f"SM{indice}",
+            },
+        )
+
+    assert len(servico.perguntas) == 3
+    assert len(mensageria.enviados) == 3
+
+
+def test_limite_nao_contamina_outro_remetente(montar_cliente) -> None:
+    """O teto é por remetente: quem abusa não derruba o atendimento dos outros."""
+    client, servico, _ = montar_cliente(
+        limite=LimitePorRemetente(maximo=2, janela_segundos=60.0)
+    )
+
+    for indice in range(5):
+        client.post(
+            "/webhook/whatsapp",
+            data={
+                "From": "whatsapp:+5511000000000",
+                "Body": f"spam {indice}",
+                "MessageSid": f"SMa{indice}",
+            },
+        )
+    client.post(
+        "/webhook/whatsapp",
+        data={
+            "From": "whatsapp:+5511999999999",
+            "Body": "cliente legítimo",
+            "MessageSid": "SMb1",
+        },
+    )
+
+    assert servico.perguntas == ["spam 0", "spam 1", "cliente legítimo"]
+
+
+def test_limite_confirma_o_webhook_mesmo_descartando(montar_cliente) -> None:
+    """O canal não pode saber do teto: um erro faria o Telegram reenviar em loop."""
+    client, _, _ = montar_cliente(limite=LimitePorRemetente(maximo=1))
+
+    client.post(
+        "/webhook/whatsapp",
+        data={"From": "whatsapp:+55119", "Body": "1", "MessageSid": "SM1"},
+    )
+    resposta = client.post(
+        "/webhook/whatsapp",
+        data={"From": "whatsapp:+55119", "Body": "2", "MessageSid": "SM2"},
+    )
+
+    assert resposta.status_code == 200
+
+
+def test_limite_libera_ao_passar_a_janela() -> None:
+    limite = LimitePorRemetente(maximo=2, janela_segundos=0.05)
+
+    assert [limite.permitir("a") for _ in range(3)] == [True, True, False]
+    time.sleep(0.06)
+    assert limite.permitir("a") is True
+
+
+def test_limite_zero_desliga_o_teto() -> None:
+    limite = LimitePorRemetente(maximo=0)
+
+    assert all(limite.permitir("a") for _ in range(50))
+
+
+def test_limite_esquece_remetentes_antigos_sem_crescer_sem_fim() -> None:
+    """Sem teto de capacidade, remetentes sempre novos viravam outro vetor de abuso."""
+    limite = LimitePorRemetente(maximo=5, capacidade=3)
+
+    for indice in range(10):
+        limite.permitir(f"remetente-{indice}")
+
+    assert limite.remetentes_rastreados <= 3
+
+
+def test_reentrega_nao_gasta_a_cota_do_remetente(montar_cliente) -> None:
+    """A rajada de reentregas é culpa do canal, não do cliente."""
+    client, servico, _ = montar_cliente(limite=LimitePorRemetente(maximo=2))
+
+    for _ in range(5):
+        client.post(
+            "/webhook/whatsapp",
+            data={"From": "whatsapp:+55119", "Body": "oi", "MessageSid": "SM_igual"},
+        )
+    client.post(
+        "/webhook/whatsapp",
+        data={"From": "whatsapp:+55119", "Body": "outra", "MessageSid": "SM_nova"},
+    )
+
+    # A reentrega foi descartada antes do teto, então a segunda vaga sobrou.
+    assert servico.perguntas == ["oi", "outra"]
+
+
+# --- Dado pessoal fora do log ------------------------------------------------
+
+
+def test_log_nao_registra_o_texto_nem_o_remetente(montar_cliente, caplog) -> None:
+    """Os logs do Render alcançam todo o workspace; não são lugar para PII."""
+    client, _, _ = montar_cliente()
+
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        client.post(
+            "/webhook/whatsapp",
+            data={
+                "From": "whatsapp:+5511987654321",
+                "Body": "meu CPF é 123.456.789-00",
+                "MessageSid": "SM1",
+            },
+        )
+
+    registrado = caplog.text
+    assert "123.456.789-00" not in registrado
+    assert "+5511987654321" not in registrado
+    # O que sobra é o suficiente para seguir a conversa: apelido e tamanho.
+    assert pseudonimo("whatsapp:+5511987654321") in registrado
+    assert "24 caracteres" in registrado
+
+
+def test_pseudonimo_e_estavel_e_distingue_remetentes() -> None:
+    assert pseudonimo("whatsapp:+55119") == pseudonimo("whatsapp:+55119")
+    assert pseudonimo("whatsapp:+55119") != pseudonimo("whatsapp:+55118")
+    assert pseudonimo(None) == "?"
+    assert "+55119" not in pseudonimo("whatsapp:+55119")

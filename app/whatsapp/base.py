@@ -5,10 +5,29 @@ pela API oficial do WhatsApp Business (ou por Telegram) significa escrever uma
 nova implementação aqui, sem tocar no RAG nem no webhook.
 """
 
+import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+
+def pseudonimo(identificador: str | None) -> str:
+    """Apelido estável de um remetente, para o log não guardar quem ele é.
+
+    O identificador de um canal é dado pessoal: no Twilio ele é literalmente o
+    número de telefone (``whatsapp:+55...``), e no Telegram o ``chat_id``
+    identifica a conta. Os logs do Render ficam retidos no dashboard e alcançam
+    todo mundo com acesso ao workspace — não é lugar para isso.
+
+    O hash é estável dentro e entre processos, que é o que importa para o uso
+    real do log: seguir uma conversa, ver que o mesmo remetente estourou o
+    limite. Não é anonimização — quem tiver o número consegue confirmar que ele
+    aparece — mas tira do log a lista de clientes que ele era antes.
+    """
+    if not identificador:
+        return "?"
+    return hashlib.sha256(identificador.encode("utf-8")).hexdigest()[:10]
 
 
 @dataclass(frozen=True)

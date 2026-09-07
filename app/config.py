@@ -45,6 +45,21 @@ class Configuracoes(BaseSettings):
     # Vazio usa o texto padrão de app/atendimento.py (MENSAGEM_BOAS_VINDAS).
     mensagem_boas_vindas: str | None = None
 
+    # --- Contenção de abuso --------------------------------------------------
+    # Mensagens que um mesmo remetente pode gastar por minuto. 0 desliga.
+    #
+    # Cada mensagem custa duas chamadas de API (o embedding da consulta e a
+    # geração), cada uma com até 3 tentativas em 429 — e a cota do tier gratuito
+    # é compartilhada entre todos os clientes. Sem um teto, uma única conversa
+    # em volume derruba o atendimento de todo mundo. 20/min é folgado para
+    # alguém digitando e apertado para um script.
+    limite_mensagens_por_minuto: int = 20
+
+    # Corte da pergunta antes de ela virar embedding e prompt. O custo em
+    # tokens é linear no tamanho, e o Telegram já aceita 4096 caracteres —
+    # uma dúvida de atendimento real não chega perto disto.
+    limite_caracteres_pergunta: int = 1000
+
     # --- RAG -----------------------------------------------------------------
     caminho_faq: Path = RAIZ / "app" / "data" / "faq_dataset.json"
     diretorio_chroma: Path = RAIZ / "chroma_db"

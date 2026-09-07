@@ -33,6 +33,12 @@ MENSAGEM_BOAS_VINDAS = (
 # em qualquer canal e nenhuma delas depende de transporte.
 COMANDOS_BOAS_VINDAS = frozenset({"/start", "/help", "/ajuda"})
 
+# Corte da pergunta antes de ela virar embedding e prompt. O custo em tokens é
+# linear no tamanho, e o corte mora aqui — e não no schema da rota — para valer
+# igual nos dois caminhos de entrada: o webhook de cada canal e o
+# `/api/mensagem`. Uma dúvida de atendimento real não chega perto disto.
+LIMITE_CARACTERES_PERGUNTA = 1000
+
 
 @dataclass(frozen=True)
 class RespostaAtendimento:
@@ -78,12 +84,14 @@ class ServicoAtendimento:
         limiar_similaridade: float,
         mensagem_transbordo: str,
         mensagem_boas_vindas: str | None = None,
+        limite_caracteres: int = LIMITE_CARACTERES_PERGUNTA,
     ) -> None:
         self._retriever = retriever
         self._generator = generator
         self._limiar = limiar_similaridade
         self._mensagem_transbordo = mensagem_transbordo
         self._mensagem_boas_vindas = mensagem_boas_vindas or MENSAGEM_BOAS_VINDAS
+        self._limite_caracteres = limite_caracteres
 
     @property
     def limiar(self) -> float:
@@ -98,11 +106,25 @@ class ServicoAtendimento:
                 texto=MENSAGEM_SEM_TEXTO, transbordo=False, similaridade=0.0
             )
 
+        if len(pergunta) > self._limite_caracteres:
+            # Cortar em vez de recusar: o cliente prolixo continua atendido, e
+            # o começo da mensagem é onde a pergunta costuma estar. O que o
+            # corte impede é o custo crescer sem teto com o tamanho da entrada.
+            logger.info(
+                "Pergunta truncada de %d para %d caracteres.",
+                len(pergunta),
+                self._limite_caracteres,
+            )
+            pergunta = pergunta[: self._limite_caracteres]
+
         # Antes da busca: '/start' não é pergunta de cliente, e mandá-lo para o
         # RAG só produz transbordo (medido: similaridade 0.771) — um humano
         # seria chamado para responder a um clique de abertura de conversa.
-        if _comando(pergunta) in COMANDOS_BOAS_VINDAS:
-            logger.info("Comando respondido sem RAG: %s", pergunta)
+        comando = _comando(pergunta)
+        if comando in COMANDOS_BOAS_VINDAS:
+            # Só o comando normalizado: `/start <payload>` carrega o payload do
+            # link de convite, que não tem por que ficar registrado.
+            logger.info("Comando respondido sem RAG: %s", comando)
             return RespostaAtendimento(
                 texto=self._mensagem_boas_vindas,
                 transbordo=False,

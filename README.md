@@ -84,7 +84,7 @@ Mensagem recebida
 - **Twilio** (WhatsApp) e **Telegram Bot API** — dois canais sobre a mesma
   interface, escolhidos por variável de ambiente
 - **Docker + Render** — deploy no plano Free, sem custo recorrente
-- **Pytest** — 146 testes unitários (rápidos, com dublês) e 38 de integração
+- **Pytest** — 158 testes unitários (rápidos, com dublês) e 38 de integração
   (dataset e embeddings reais)
 
 ### Três fronteiras trocáveis (o ponto arquitetural do projeto)
@@ -458,6 +458,8 @@ real, o plano pago do Render resolve, e o resto do projeto não muda.
 | `TWILIO_DRY_RUN` | Se `true`, loga a mensagem em vez de enviar de verdade | `true` |
 | `TWILIO_VALIDAR_ASSINATURA` | Confere o `X-Twilio-Signature`; obrigatório fora de dry-run | `false` |
 | `EXPOR_FERRAMENTAS_DE_TESTE` | Liga `/api/mensagem` e `/docs`. Deixe `false` em produção | `false` |
+| `LIMITE_MENSAGENS_POR_MINUTO` | Teto por remetente; `0` desliga | `20` |
+| `LIMITE_CARACTERES_PERGUNTA` | Corte da pergunta antes do embedding e do prompt | `1000` |
 | `PROVEDOR_LLM` | `openai`, `gemini` ou `demo` (responde sem API, para testes) | `openai` |
 | `PROVEDOR_EMBEDDING` | `local` (sentence-transformers) ou `gemini` | `local` |
 | `MODELO_EMBEDDING` | Modelo do provedor **local** | `intfloat/multilingual-e5-large` |
@@ -663,7 +665,7 @@ JSON, porém, ficam órfãs na base — aí sim vale um `--recriar`.
 ## Testes
 
 ```bash
-pytest                  # 146 testes unitários, ~1s, sem tocar em modelo ou API
+pytest                  # 158 testes unitários, ~1s, sem tocar em modelo ou API
 pytest -m integracao    # 38 testes com dataset e embeddings reais
 ```
 

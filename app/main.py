@@ -14,7 +14,7 @@ demoram — o caso do primeiro acesso depois de uma hibernação no Render. Ver
 import logging
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 
 from fastapi import (
@@ -35,7 +35,7 @@ from app.config import Configuracoes, obter_configuracoes
 from app.dependencias import criar_embedding, criar_mensageria, criar_servico
 from app.rag.ingest import garantir_indice
 from app.rag.vector_store import criar_vector_store
-from app.whatsapp.base import MensagemRecebida, ProvedorMensageria
+from app.whatsapp.base import MensagemRecebida, ProvedorMensageria, pseudonimo
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,74 @@ class RegistroDeUpdates:
             return True
 
 
+class LimitePorRemetente:
+    """Teto de mensagens por remetente numa janela de tempo.
+
+    Existe por causa do custo: cada mensagem que passa a 1a barreira vira duas
+    chamadas de API (embedding da consulta e geração), cada uma com até 3
+    tentativas em 429 — e a cota do tier gratuito é uma só para todos os
+    clientes. Sem teto, uma conversa em volume esgota a cota e derruba o
+    atendimento de todo mundo; a deduplicação de updates não ajuda, porque ela
+    só reconhece reentregas da *mesma* mensagem.
+
+    Memória do processo, pela mesma razão do ``RegistroDeUpdates``: o alvo é
+    conter abuso de volume numa instância única, não contabilizar com precisão
+    entre réplicas. O custo de errar é uma mensagem legítima descartada num
+    restart, contra um Redis para um serviço que não tem nem disco.
+
+    A capacidade limita os remetentes rastreados: sem ela, mensagens de
+    remetentes sempre novos fariam o dicionário crescer sem fim — trocando um
+    vetor de abuso por outro.
+    """
+
+    def __init__(
+        self,
+        maximo: int = 20,
+        janela_segundos: float = 60.0,
+        capacidade: int = 1024,
+    ) -> None:
+        self._maximo = maximo
+        self._janela = janela_segundos
+        self._capacidade = capacidade
+        self._historico: OrderedDict[str, deque[float]] = OrderedDict()
+        self._trava = threading.Lock()
+
+    @property
+    def remetentes_rastreados(self) -> int:
+        """Quantos remetentes estão na memória. Exposto porque o teto de
+        capacidade é uma garantia do componente, não um detalhe: sem ele, uma
+        rajada de remetentes novos faria o dicionário crescer sem fim."""
+        with self._trava:
+            return len(self._historico)
+
+    def permitir(self, remetente: str) -> bool:
+        """Registra a mensagem e diz se ela cabe no teto do remetente."""
+        if self._maximo <= 0:  # 0 desliga o limite.
+            return True
+
+        agora = time.monotonic()
+        with self._trava:
+            marcas = self._historico.get(remetente)
+            if marcas is None:
+                marcas = deque()
+                self._historico[remetente] = marcas
+            self._historico.move_to_end(remetente)
+
+            while marcas and agora - marcas[0] > self._janela:
+                marcas.popleft()
+
+            # O remetente que estourou o teto continua no fim da fila de
+            # descarte: quem está martelando é justamente quem não pode ser
+            # esquecido, ou o limite se reinicia sozinho.
+            if len(marcas) >= self._maximo:
+                return False
+
+            marcas.append(agora)
+            while len(self._historico) > self._capacidade:
+                self._historico.popitem(last=False)
+            return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Carrega configuração, índice, vector store e canal uma vez na subida."""
@@ -113,6 +181,9 @@ async def lifespan(app: FastAPI):
     )
     app.state.mensageria = criar_mensageria(config)
     app.state.updates = RegistroDeUpdates()
+    app.state.limite = LimitePorRemetente(
+        maximo=config.limite_mensagens_por_minuto
+    )
     yield
 
 
@@ -156,6 +227,15 @@ def obter_updates(request: Request) -> RegistroDeUpdates:
         registro = RegistroDeUpdates()
         request.app.state.updates = registro
     return registro
+
+
+def obter_limite(request: Request) -> LimitePorRemetente:
+    # Sob demanda pelo mesmo motivo de `obter_updates`.
+    limite = getattr(request.app.state, "limite", None)
+    if limite is None:
+        limite = LimitePorRemetente()
+        request.app.state.limite = limite
+    return limite
 
 
 # --- Modelos do endpoint de teste --------------------------------------------
@@ -213,12 +293,19 @@ def _processar(
     Executa depois de o webhook já ter respondido, então não há para quem
     propagar exceção: ou a falha é registrada aqui, ou some sem deixar rastro.
     """
-    logger.info("Mensagem recebida de %s: %s", mensagem.remetente, mensagem.texto)
+    logger.info(
+        "Mensagem recebida de %s (%d caracteres).",
+        pseudonimo(mensagem.remetente),
+        len(mensagem.texto),
+    )
+    logger.debug("Texto de %s: %s", pseudonimo(mensagem.remetente), mensagem.texto)
     try:
         resposta = servico.responder(mensagem.texto)
         mensageria.enviar(mensagem.remetente, resposta.texto)
     except Exception:  # noqa: BLE001 - último ponto antes de a tarefa sumir
-        logger.exception("Falha ao processar a mensagem de %s.", mensagem.remetente)
+        logger.exception(
+            "Falha ao processar a mensagem de %s.", pseudonimo(mensagem.remetente)
+        )
 
 
 def _agendar(
@@ -227,12 +314,17 @@ def _agendar(
     servico: ServicoAtendimento,
     mensageria: ProvedorMensageria,
     updates: RegistroDeUpdates,
+    limite: LimitePorRemetente,
 ) -> None:
-    """Enfileira o processamento, ignorando reentregas da mesma mensagem.
+    """Enfileira o processamento, descartando reentregas e excesso de volume.
 
-    A chave junta remetente e id da mensagem porque o ``message_id`` do
-    Telegram é sequencial por conversa, não global: sozinho, ele faria a
-    mensagem de um cliente descartar a de outro.
+    A chave de deduplicação junta remetente e id da mensagem porque o
+    ``message_id`` do Telegram é sequencial por conversa, não global: sozinho,
+    ele faria a mensagem de um cliente descartar a de outro.
+
+    O teto por remetente vem depois da deduplicação, de propósito: uma rajada
+    de reentregas do mesmo update é culpa do canal, não do cliente, e não deve
+    consumir a cota dele.
     """
     chave = (
         f"{mensagem.remetente}:{mensagem.id_externo}"
@@ -240,8 +332,19 @@ def _agendar(
         else None
     )
     if not updates.registrar(chave):
-        logger.info("Reentrega ignorada (%s).", chave)
+        logger.info("Reentrega ignorada (%s).", pseudonimo(chave))
         return
+
+    if not limite.permitir(mensagem.remetente):
+        # Descarte silencioso: responder "você excedeu o limite" ensinaria o
+        # limite a quem está sondando, e gastaria um envio por mensagem
+        # descartada — exatamente o que o teto existe para evitar.
+        logger.warning(
+            "Mensagem descartada: %s excedeu o limite por minuto.",
+            pseudonimo(mensagem.remetente),
+        )
+        return
+
     tarefas.add_task(_processar, mensagem, servico, mensageria)
 
 
@@ -266,6 +369,7 @@ async def webhook_whatsapp(
     mensageria: ProvedorMensageria = Depends(obter_mensageria),
     config: Configuracoes = Depends(obter_config_app),
     updates: RegistroDeUpdates = Depends(obter_updates),
+    limite: LimitePorRemetente = Depends(obter_limite),
 ) -> Response:
     _exigir_canal(config, "twilio")
 
@@ -287,7 +391,7 @@ async def webhook_whatsapp(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(erro)
         ) from erro
 
-    _agendar(tarefas, mensagem, servico, mensageria, updates)
+    _agendar(tarefas, mensagem, servico, mensageria, updates, limite)
 
     return Response(content=TWIML_VAZIO, media_type="application/xml")
 
@@ -300,6 +404,7 @@ async def webhook_telegram(
     mensageria: ProvedorMensageria = Depends(obter_mensageria),
     config: Configuracoes = Depends(obter_config_app),
     updates: RegistroDeUpdates = Depends(obter_updates),
+    limite: LimitePorRemetente = Depends(obter_limite),
 ) -> JSONResponse:
     _exigir_canal(config, "telegram")
 
@@ -335,7 +440,7 @@ async def webhook_telegram(
         logger.info("Update do Telegram ignorado: %s", erro)
         return JSONResponse({"ok": True, "ignorado": True})
 
-    _agendar(tarefas, mensagem, servico, mensageria, updates)
+    _agendar(tarefas, mensagem, servico, mensageria, updates, limite)
 
     return JSONResponse({"ok": True})
 

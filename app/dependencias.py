@@ -115,6 +115,7 @@ def criar_servico(
         limiar_similaridade=resolver_limiar(config, embedding),
         mensagem_transbordo=config.mensagem_transbordo,
         mensagem_boas_vindas=config.mensagem_boas_vindas,
+        limite_caracteres=config.limite_caracteres_pergunta,
     )
 
 

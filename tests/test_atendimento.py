@@ -1,5 +1,7 @@
 """Testes do fluxo completo de atendimento (busca -> handoff -> geração)."""
 
+import logging
+
 import pytest
 
 from app.atendimento import (
@@ -28,12 +30,13 @@ def _documento(pergunta: str, resposta: str) -> DocumentoFalso:
     )
 
 
-def _criar_servico(retorno, llm) -> ServicoAtendimento:
+def _criar_servico(retorno, llm, **kwargs) -> ServicoAtendimento:
     return ServicoAtendimento(
         retriever=Retriever(VectorStoreFalso(retorno), top_k=3),
         generator=Generator(llm, nome_empresa="Loja Exemplo"),
         limiar_similaridade=LIMIAR,
         mensagem_transbordo=MENSAGEM_TRANSBORDO,
+        **kwargs,
     )
 
 
@@ -226,3 +229,58 @@ def test_mensagem_de_boas_vindas_e_configuravel() -> None:
     )
 
     assert servico.responder("/start").texto == "Oi! Sou o bot da Loja Exemplo."
+
+
+# --- Teto de tamanho da pergunta ---------------------------------------------
+
+
+def test_pergunta_longa_e_cortada_antes_de_virar_embedding_e_prompt() -> None:
+    """O custo em tokens é linear no tamanho, e a entrada não tinha teto.
+
+    O corte mora no serviço, e não no schema da rota, para valer igual nos dois
+    caminhos de entrada — o webhook de cada canal e o `/api/mensagem`.
+    """
+    llm = LLMFalso("Chega em 7 dias.")
+    vector_store = VectorStoreFalso(
+        [(_documento("Qual o prazo de entrega?", "De 3 a 7 dias úteis."), 0.10)]
+    )
+    servico = ServicoAtendimento(
+        retriever=Retriever(vector_store, top_k=3),
+        generator=Generator(llm, nome_empresa="Loja Exemplo"),
+        limiar_similaridade=LIMIAR,
+        mensagem_transbordo=MENSAGEM_TRANSBORDO,
+        limite_caracteres=100,
+    )
+
+    servico.responder("prazo? " + "x" * 5_000)
+
+    consulta, _ = vector_store.chamadas[0]
+    assert len(consulta) == 100
+    _, prompt_usuario = llm.prompts[0]
+    assert len(prompt_usuario) < 500
+
+
+def test_pergunta_dentro_do_limite_chega_intacta() -> None:
+    llm = LLMFalso("Chega em 7 dias.")
+    servico = _criar_servico(
+        [(_documento("Qual o prazo de entrega?", "De 3 a 7 dias úteis."), 0.10)],
+        llm,
+        limite_caracteres=100,
+    )
+
+    servico.responder("quando chega meu pedido?")
+
+    _, prompt_usuario = llm.prompts[0]
+    assert "quando chega meu pedido?" in prompt_usuario
+
+
+def test_comando_com_payload_nao_vai_inteiro_para_o_log(caplog) -> None:
+    """`/start <payload>` carrega o payload do link de convite."""
+    servico = _criar_servico([], LLMFalso())
+
+    with caplog.at_level(logging.INFO, logger="app.atendimento"):
+        resposta = servico.responder("/start ref_campanha_cliente_12345")
+
+    assert resposta.texto == MENSAGEM_BOAS_VINDAS
+    assert "ref_campanha_cliente_12345" not in caplog.text
+    assert "/start" in caplog.text

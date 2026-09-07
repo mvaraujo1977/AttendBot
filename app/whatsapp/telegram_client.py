@@ -11,7 +11,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from app.whatsapp.base import MensagemRecebida, ProvedorMensageria
+from app.whatsapp.base import MensagemRecebida, ProvedorMensageria, pseudonimo
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,9 @@ class ProvedorTelegram(ProvedorMensageria):
         texto = self._truncar(texto)
 
         if self._dry_run:
-            logger.info("[DRY-RUN] resposta para %s: %s", destinatario, texto)
+            logger.info(
+                "[DRY-RUN] resposta para %s: %s", pseudonimo(destinatario), texto
+            )
             return None
 
         if not self._token:
@@ -99,7 +101,9 @@ class ProvedorTelegram(ProvedorMensageria):
             )
 
         id_mensagem = str(corpo["result"]["message_id"])
-        logger.info("Mensagem %s enviada para %s", id_mensagem, destinatario)
+        logger.info(
+            "Mensagem %s enviada para %s", id_mensagem, pseudonimo(destinatario)
+        )
         return id_mensagem
 
     def validar_requisicao(
